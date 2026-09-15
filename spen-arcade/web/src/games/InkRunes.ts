@@ -1,4 +1,5 @@
-import { Scene, SceneContext, persist } from '../core/Engine';
+import { Scene, SceneContext } from '../core/Engine';
+import { Shell } from '../core/Shell';
 import { buildRuneTemplates, GestureRecognizer, Pt } from '../core/GestureRecognizer';
 import { clamp, makeRng, TAU } from '../core/math';
 
@@ -55,13 +56,22 @@ export class InkRunes implements Scene {
   };
 
   private onEvent = (kind: string) => {
-    if (this.over) return;
+    if (this.over || this.ctxRef?.scene !== 'runes') return;
+    if (this.shell.phase !== 'playing') return;
     if (kind === 'button_down') this.beginStroke();
   };
   private bound = false;
   private prevButton = false;
+  private shell = new Shell('runes', () => this.restart());
+  private ctxRef: SceneContext | null = null;
 
   enter(ctx: SceneContext) {
+    this.ctxRef = ctx;
+    this.restart();
+  }
+
+  private restart() {
+    const ctx = this.ctxRef!;
     this.rng = makeRng((Date.now() & 0xffff) | 3);
     const templates = buildRuneTemplates();
     this.rec = new GestureRecognizer();
@@ -75,8 +85,8 @@ export class InkRunes implements Scene {
     this.cooldowns = { fire: 0, ice: 0, shield: 0, chain: 0, vortex: 0 };
 
     if (!this.bound) { ctx.input.onEvent(this.onEvent); this.bound = true; }
-    ctx.input.calibrate();
     ctx.r.camX = 0; ctx.r.camY = 0; ctx.r.camZoom = 1; ctx.r.camRot = 0;
+    this.shell.begin(ctx);
   }
 
   private beginStroke() {
@@ -195,22 +205,24 @@ export class InkRunes implements Scene {
   private vortexY = 0;
 
   update(ctx: SceneContext, dt: number) {
+    this.ctxRef = ctx;
+    if (!this.shell.update(ctx, dt)) return;
     const { pen, r, audio } = ctx;
 
     if (this.over) {
       this.overTimer += dt;
-      if (this.overTimer > 2.5) {
-        if (this.score > (ctx.save.best[this.name] ?? 0)) {
-          ctx.save.best[this.name] = Math.floor(this.score);
-          persist(ctx.save);
-        }
-        ctx.go('hub');
+      if (this.overTimer > 1.2) {
+        this.shell.finish(ctx, {
+          title: 'ЯДРО ПАЛО',
+          score: this.score,
+          note: `волна ${this.wave}`,
+        });
       }
       return;
     }
 
     // --- курсор ---------------------------------------------------------------
-    const ty = ctx.save.invertY ? -pen.tiltY : pen.tiltY;
+    const ty = pen.tiltY;
     // Нелинейная скорость: sqrt даёт точность у нуля и размах на краях.
     const m = pen.magnitude;
     const speed = InkRunes.CURSOR_SPEED * Math.sqrt(m);
@@ -337,9 +349,14 @@ export class InkRunes implements Scene {
       const hp = type === 'armor' ? 150 + this.wave * 14
                : type === 'swarm' ? 26
                : 55 + this.wave * 6;
+      // Держим дистанцию от ядра по горизонтали: иначе первая же волна
+      // падает прямо на него и отнимает здоровье до первого заклинания.
+      const coreX = ctx.w / 2;
+      let fx = this.rng() * ctx.w;
+      if (Math.abs(fx - coreX) < ctx.w * 0.12) fx = coreX + Math.sign(fx - coreX || 1) * ctx.w * 0.2;
       this.foes.push({
-        x: this.rng() * ctx.w,
-        y: -40 - this.rng() * 300,
+        x: clamp(fx, 20, ctx.w - 20),
+        y: -80 - this.rng() * 340,
         r: type === 'armor' ? 26 : type === 'swarm' ? 11 : 17,
         hp, maxHp: hp,
         speed: type === 'swarm' ? 92 + this.wave * 3
@@ -439,12 +456,7 @@ export class InkRunes implements Scene {
       );
     }
 
-    if (this.over) {
-      r.roundRect(0, ctx.h / 2 - 70, ctx.w, 140, 0, 'rgba(6,8,18,0.85)');
-      r.text('ЯДРО ПАЛО', ctx.w / 2, ctx.h / 2 - 24, 30, '#ff8080', 'center');
-      r.text(`${Math.floor(this.score)} очков · волна ${this.wave}`,
-        ctx.w / 2, ctx.h / 2 + 16, 17, '#cfe0ff', 'center');
-    }
     r.restore();
+    this.shell.render(ctx);
   }
 }

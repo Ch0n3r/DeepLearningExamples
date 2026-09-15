@@ -35,18 +35,23 @@ export class Hub implements Scene {
   private pendingLaunch: string | null = null;
 
   private onEvent = (kind: string) => {
+    if (!this.active) return;
     if (kind === 'button_tap' && !this.pendingLaunch) this.launch();
   };
   private onTap = (x: number, _y: number) => {
-    if (this.pendingLaunch) return;
+    if (!this.active || this.pendingLaunch) return;
     if (x < 0.3) this.index = Math.max(0, this.index - 1);
     else if (x > 0.7) this.index = Math.min(this.cards.length - 1, this.index + 1);
     else this.launch();
   };
   private bound = false;
   private prevButton = false;
+  /** Ввод слушается глобально, поэтому сверяемся с активной сценой:
+   *  иначе кнопка стилуса в игре запускала бы карточку из меню. */
+  private active = false;
 
   enter(ctx: SceneContext) {
+    this.active = true;
     this.navCooldown = 0;
     this.launching = 0;
     this.pendingLaunch = null;
@@ -74,6 +79,7 @@ export class Hub implements Scene {
       if (this.launching <= 0) {
         const id = this.pendingLaunch;
         this.pendingLaunch = null;
+        this.active = false;
         ctx.go(id);
       }
       return;

@@ -2,6 +2,7 @@ package com.spenarcade
 
 import android.app.Activity
 import android.util.Log
+import android.view.Surface
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import com.samsung.android.sdk.penremote.AirMotionEvent
@@ -200,9 +201,30 @@ class SPenBridge(
         val mag = maxOf(abs(deltaX), abs(deltaY))
         if (mag > maxDelta) maxDelta = mag
 
-        airX = (airX + deltaX * AIR_GAIN).coerceIn(-1.4f, 1.4f)
-        airY = (airY + deltaY * AIR_GAIN).coerceIn(-1.4f, 1.4f)
+        // Дельты приходят в СОБСТВЕННОЙ системе координат устройства
+        // (той, что при портретной ориентации), а игра идёт в ландшафте.
+        // Без разворота наклон «влево-вправо» поднимал бы нос самолёта.
+        val (dx, dy) = rotateToScreen(deltaX, deltaY)
+
+        airX = (airX + dx * AIR_GAIN).coerceIn(-1.4f, 1.4f)
+        airY = (airY + dy * AIR_GAIN).coerceIn(-1.4f, 1.4f)
         publish()
+    }
+
+    /** Поворот вектора из системы устройства в систему текущей ориентации экрана. */
+    private fun rotateToScreen(x: Float, y: Float): Pair<Float, Float> {
+        @Suppress("DEPRECATION")
+        val rotation = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            activity.display?.rotation ?: Surface.ROTATION_0
+        } else {
+            activity.windowManager.defaultDisplay.rotation
+        }
+        return when (rotation) {
+            Surface.ROTATION_90 -> Pair(-y, x)
+            Surface.ROTATION_180 -> Pair(-x, -y)
+            Surface.ROTATION_270 -> Pair(y, -x)
+            else -> Pair(x, y)
+        }
     }
 
     /** Сводит оба канала в итоговый наклон. Hover, когда он есть, — истина. */

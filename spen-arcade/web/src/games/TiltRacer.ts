@@ -1,4 +1,5 @@
-import { Scene, SceneContext, persist } from '../core/Engine';
+import { Scene, SceneContext } from '../core/Engine';
+import { Shell } from '../core/Shell';
 import { clamp, damp, fbm, lerp, makeNoise1D, makeRng, TAU } from '../core/math';
 
 interface TrackPoint { x: number; y: number; nx: number; ny: number; width: number; }
@@ -41,6 +42,8 @@ export class TiltRacer implements Scene {
   private best = 0;
   private finished = false;
   private timeLeft = 45;
+  private shell = new Shell('race', () => this.restart());
+  private ctxRef: SceneContext | null = null;
 
   private static readonly ENGINE = 1750;
   private static readonly BRAKE = 2300;
@@ -51,6 +54,12 @@ export class TiltRacer implements Scene {
   private static readonly SEGMENTS = 900;
 
   enter(ctx: SceneContext) {
+    this.ctxRef = ctx;
+    this.restart();
+  }
+
+  private restart() {
+    const ctx = this.ctxRef!;
     const seed = (Date.now() & 0x7fff) | 1;
     this.noise = makeNoise1D(seed);
     this.rng = makeRng(seed);
@@ -65,8 +74,9 @@ export class TiltRacer implements Scene {
     this.time = 0; this.score = 0; this.combo = 0; this.finished = false;
     this.timeLeft = 45;
     this.best = ctx.save.best[this.name] ?? 0;
-
-    ctx.input.calibrate();
+    ctx.r.camX = this.x;
+    ctx.r.camY = this.y;
+    this.shell.begin(ctx);
   }
 
   /**
@@ -102,6 +112,9 @@ export class TiltRacer implements Scene {
     }
 
     for (let i = 0; i < n; i += 9) {
+      // Первые сегменты оставляем чистыми: машина стартует в track[0],
+      // и конус рядом означал бы штраф ещё до первого поворота.
+      if (i < 40) continue;
       const t = this.track[i];
       if (this.rng() < 0.45) {
         const off = (this.rng() * 2 - 1) * (t.width * 0.72);
@@ -131,17 +144,15 @@ export class TiltRacer implements Scene {
   }
 
   update(ctx: SceneContext, dt: number) {
+    this.ctxRef = ctx;
+    if (!this.shell.update(ctx, dt)) return;
     const { pen, r, audio } = ctx;
 
     if (this.finished) {
       r.camZoom = damp(r.camZoom, 0.55, 0.5, dt);
       this.time += dt;
-      if (this.time > 3) {
-        if (this.score > (ctx.save.best[this.name] ?? 0)) {
-          ctx.save.best[this.name] = Math.floor(this.score);
-          persist(ctx.save);
-        }
-        ctx.go('hub');
+      if (this.time > 1.2) {
+        this.shell.finish(ctx, { title: 'ВРЕМЯ ВЫШЛО', score: this.score });
       }
       return;
     }
@@ -151,7 +162,7 @@ export class TiltRacer implements Scene {
     this.timeLeft -= dt;
     if (this.timeLeft <= 0) { this.finish(ctx); return; }
 
-    const tiltY = ctx.save.invertY ? -pen.tiltY : pen.tiltY;
+    const tiltY = pen.tiltY;
     // Наклон «от себя» = газ. Это интуитивнее, чем наоборот: игрок буквально
     // толкает машину вперёд кончиком пера.
     const throttle = clamp(-tiltY, 0, 1);
@@ -340,11 +351,7 @@ export class TiltRacer implements Scene {
       this.timeLeft < 8 ? '#ff6b6b' : '#cfe0ff', 'right');
     if (this.combo > 1) r.text(`ворота x${this.combo}`, ctx.w / 2, 34, 18, '#7dffb0', 'center');
     if (this.drift > 0.4) r.text('ДРИФТ', ctx.w / 2, ctx.h - 40, 24, '#ffd166', 'center');
-    if (this.finished) {
-      r.roundRect(0, ctx.h / 2 - 60, ctx.w, 120, 0, 'rgba(6,8,18,0.82)');
-      r.text('ВРЕМЯ ВЫШЛО', ctx.w / 2, ctx.h / 2 - 18, 30, '#ffd166', 'center');
-      r.text(`${Math.floor(this.score)} очков`, ctx.w / 2, ctx.h / 2 + 20, 18, '#cfe0ff', 'center');
-    }
     r.restore();
+    this.shell.render(ctx);
   }
 }

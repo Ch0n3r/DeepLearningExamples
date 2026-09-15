@@ -1,4 +1,5 @@
-import { Scene, SceneContext, persist } from '../core/Engine';
+import { Scene, SceneContext } from '../core/Engine';
+import { Shell } from '../core/Shell';
 import { damp, lerp, makeRng, segmentHitsCircle, SpatialHash, TAU } from '../core/math';
 
 interface Bird {
@@ -54,15 +55,24 @@ export class BirdHunt implements Scene {
   private static readonly RELOAD_TIME = 1.1;
 
   private onEvent = (kind: string) => {
-    if (this.over) return;
+    if (this.over || this.ctxRef?.scene !== 'hunt') return;
+    if (this.shell.phase !== 'playing') return;
     if (kind === 'button_tap') this.wantShot = true;
     if (kind === 'button_long') this.wantReload = true;
   };
   private wantShot = false;
   private wantReload = false;
   private bound = false;
+  private shell = new Shell('hunt', () => this.restart());
+  private ctxRef: SceneContext | null = null;
 
   enter(ctx: SceneContext) {
+    this.ctxRef = ctx;
+    this.restart();
+  }
+
+  private restart() {
+    const ctx = this.ctxRef!;
     this.rng = makeRng((Date.now() & 0xffff) | 1);
     this.birds = []; this.pellets = [];
     this.aimX = ctx.w / 2; this.aimY = ctx.h / 2;
@@ -74,9 +84,9 @@ export class BirdHunt implements Scene {
     this.wantShot = false; this.wantReload = false;
 
     if (!this.bound) { ctx.input.onEvent(this.onEvent); this.bound = true; }
-    ctx.input.calibrate();
     ctx.r.camX = 0; ctx.r.camY = 0; ctx.r.camZoom = 1; ctx.r.camRot = 0;
     this.spawnWave(ctx);
+    this.shell.begin(ctx);
   }
 
   private spawnWave(ctx: SceneContext) {
@@ -103,16 +113,18 @@ export class BirdHunt implements Scene {
   }
 
   update(ctx: SceneContext, dt: number) {
+    this.ctxRef = ctx;
+    if (!this.shell.update(ctx, dt)) return;
     const { pen, r, audio } = ctx;
 
     if (this.over) {
       this.overTimer += dt;
-      if (this.overTimer > 2.5) {
-        if (this.score > (ctx.save.best[this.name] ?? 0)) {
-          ctx.save.best[this.name] = Math.floor(this.score);
-          persist(ctx.save);
-        }
-        ctx.go('hub');
+      if (this.overTimer > 1.2) {
+        this.shell.finish(ctx, {
+          title: 'ОХОТА ОКОНЧЕНА',
+          score: this.score,
+          note: `волна ${this.wave} · промахов ${this.misses}`,
+        });
       }
       return;
     }
@@ -127,7 +139,7 @@ export class BirdHunt implements Scene {
       this.aimY = damp(this.aimY, pen.hoverY * ctx.h, 0.05, dt);
       this.aimVX = 0; this.aimVY = 0;
     } else {
-      const ty = ctx.save.invertY ? -pen.tiltY : pen.tiltY;
+      const ty = pen.tiltY;
       this.aimVX += pen.tiltX * BirdHunt.AIM_ACCEL * dt;
       this.aimVY += ty * BirdHunt.AIM_ACCEL * dt;
       const d = Math.exp(-BirdHunt.AIM_DRAG * dt);
@@ -408,12 +420,7 @@ export class BirdHunt implements Scene {
       this.timeLeft < 10 ? '#ff6b6b' : '#ffffff', 'right');
     r.text('удержать — перезарядка', ctx.w - 20, 60, 12, 'rgba(255,255,255,0.6)', 'right');
 
-    if (this.over) {
-      r.roundRect(0, ctx.h / 2 - 70, ctx.w, 140, 0, 'rgba(6,8,18,0.82)');
-      r.text('ОХОТА ОКОНЧЕНА', ctx.w / 2, ctx.h / 2 - 24, 28, '#ffd166', 'center');
-      r.text(`${Math.floor(this.score)} очков · промахов ${this.misses}`,
-        ctx.w / 2, ctx.h / 2 + 16, 17, '#cfe0ff', 'center');
-    }
     r.restore();
+    this.shell.render(ctx);
   }
 }

@@ -11,6 +11,9 @@ export interface SceneContext {
   go(scene: string, payload?: unknown): void;
   /** Общий профиль игрока: рекорды, монеты, разблокировки. */
   save: SaveData;
+  /** Имя активной сцены. Обвязка игр слушает ввод глобально и по нему
+   *  понимает, её сейчас очередь реагировать или соседней сцены. */
+  scene: string;
   w: number;
   h: number;
 }
@@ -31,6 +34,8 @@ export interface SaveData {
   sensitivity: number;
   deadzone: number;
   invertY: boolean;
+  invertX: boolean;
+  swapAxes: boolean;
   unlocked: string[];
 }
 
@@ -38,7 +43,8 @@ const SAVE_KEY = 'spen-arcade-v1';
 
 function loadSave(): SaveData {
   const fallback: SaveData = {
-    best: {}, coins: 0, sensitivity: 1, deadzone: 0.07, invertY: false, unlocked: ['sky'],
+    best: {}, coins: 0, sensitivity: 1, deadzone: 0.07,
+    invertY: false, invertX: false, swapAxes: false, unlocked: ['sky'],
   };
   try {
     const raw = localStorage.getItem(SAVE_KEY);
@@ -82,12 +88,16 @@ export class Engine {
       r: renderer,
       audio,
       save,
+      scene: '',
       w: renderer.width,
       h: renderer.height,
       go: (name, payload) => this.switchTo(name, payload),
     };
     input.sensitivity = save.sensitivity;
     input.deadzone = save.deadzone;
+    input.invertX = save.invertX;
+    input.invertY = save.invertY;
+    input.swapAxes = save.swapAxes;
   }
 
   register(scene: Scene) { this.scenes.set(scene.name, scene); return this; }
@@ -97,6 +107,7 @@ export class Engine {
     if (!next) throw new Error(`Нет сцены "${name}"`);
     this.current?.exit?.(this.ctx);
     this.current = next;
+    this.ctx.scene = name;
     this.acc = 0;
     next.enter(this.ctx, payload);
   }

@@ -1,4 +1,5 @@
-import { Scene, SceneContext, persist } from '../core/Engine';
+import { Scene, SceneContext } from '../core/Engine';
+import { Shell } from '../core/Shell';
 import { clamp, damp, fbm, lerp, makeNoise1D, makeRng, TAU } from '../core/math';
 
 interface Ring { x: number; y: number; r: number; taken: boolean; }
@@ -43,6 +44,11 @@ export class SkyDrifter implements Scene {
   private alive = true;
   private deadTimer = 0;
   private spawnCursor = 0;
+  private shell = new Shell('sky', () => this.restart());
+  private ctxRef: SceneContext | null = null;
+
+  /** Сколько мира впереди старта держим пустым, px. */
+  private static readonly SAFE_ZONE = 900;
 
   private static readonly BASE_SPEED = 260;
   private static readonly BOOST_SPEED = 520;
@@ -51,12 +57,24 @@ export class SkyDrifter implements Scene {
   private static readonly SEG = 40;           // шаг сэмплирования каньона, px
 
   enter(ctx: SceneContext) {
+    this.ctxRef = ctx;
+    this.restart();
+  }
+
+  private restart() {
+    const ctx = this.ctxRef!;
     const seed = (Date.now() & 0xffff) || 7;
     this.noiseTop = makeNoise1D(seed);
     this.noiseBot = makeNoise1D(seed ^ 0x9e37);
     this.rng = makeRng(seed);
 
-    this.px = 0; this.py = 0; this.prevX = 0; this.prevY = 0;
+    // Старт строго по центру коридора: раньше самолёт появлялся на y=0,
+    // а коридор в этой точке мог быть смещён шумом — и раунд начинался
+    // мгновенным ударом о скалу.
+    this.px = 0;
+    const start = this.corridor(0);
+    this.py = (start.top + start.bottom) / 2;
+    this.prevX = this.px; this.prevY = this.py;
     this.vx = SkyDrifter.BASE_SPEED; this.vy = 0;
     this.heading = 0; this.roll = 0; this.speed = SkyDrifter.BASE_SPEED;
     this.heat = 0; this.overheated = false; this.shield = 1.5;
@@ -64,8 +82,10 @@ export class SkyDrifter implements Scene {
     this.distance = 0; this.score = 0; this.combo = 1; this.comboTimer = 0;
     this.alive = true; this.deadTimer = 0; this.spawnCursor = 0;
 
-    ctx.input.calibrate();
+    ctx.r.camX = this.px;
+    ctx.r.camY = this.py;
     ctx.r.camZoom = 1;
+    this.shell.begin(ctx);
   }
 
   /** Границы каньона в мировой точке x. Ширина сужается с дистанцией. */
@@ -78,15 +98,19 @@ export class SkyDrifter implements Scene {
   }
 
   update(ctx: SceneContext, dt: number) {
+    this.ctxRef = ctx;
+    if (!this.shell.update(ctx, dt)) return;
     const { pen, r, audio } = ctx;
 
     if (!this.alive) {
       this.deadTimer += dt;
       r.camZoom = damp(r.camZoom, 1.6, 0.4, dt);
-      if (this.deadTimer > 2.2) {
-        const best = ctx.save.best[this.name] ?? 0;
-        if (this.score > best) { ctx.save.best[this.name] = Math.floor(this.score); persist(ctx.save); }
-        ctx.go('hub');
+      if (this.deadTimer > 1.4) {
+        this.shell.finish(ctx, {
+          title: 'РАЗБИЛСЯ',
+          score: this.score,
+          note: `${(this.distance / 1000).toFixed(2)} км пройдено`,
+        });
       }
       return;
     }
@@ -106,7 +130,7 @@ export class SkyDrifter implements Scene {
     this.speed = damp(this.speed, target, wantBoost ? 0.18 : 0.5, dt);
 
     // --- угловая динамика от наклона --------------------------------------
-    const tiltY = ctx.save.invertY ? -pen.tiltY : pen.tiltY;
+    const tiltY = pen.tiltY;
     // Крен тем эффективнее, чем выше скорость: на форсаже самолёт «острее».
     const authority = lerp(0.75, 1.25, (this.speed - SkyDrifter.BASE_SPEED) /
                                         (SkyDrifter.BOOST_SPEED - SkyDrifter.BASE_SPEED));
@@ -212,6 +236,10 @@ export class SkyDrifter implements Scene {
         const y = lerp(c.top + r + 10, c.bottom - r - 10, this.rng());
         this.rings.push({ x, y, r, taken: false });
       }
+      // В стартовой зоне препятствий нет: игрок должен успеть взять перо
+      // и понять, куда летит, прежде чем появится первый камень.
+      if (x < SkyDrifter.SAFE_ZONE) continue;
+
       // Плотность камней растёт с дистанцией — естественная кривая сложности.
       const rockChance = clamp(0.18 + x / 90000, 0.18, 0.72);
       if (this.rng() < rockChance) {
@@ -336,11 +364,7 @@ export class SkyDrifter implements Scene {
     r.text(this.overheated ? 'ПЕРЕГРЕВ' : 'ФОРСАЖ', ctx.w - 20, 56, 12,
       this.overheated ? '#ff8080' : '#7fb6ff', 'right');
 
-    if (!this.alive) {
-      r.roundRect(0, ctx.h / 2 - 60, ctx.w, 120, 0, 'rgba(6,8,18,0.8)');
-      r.text('РАЗБИЛСЯ', ctx.w / 2, ctx.h / 2 - 18, 32, '#ff8a5c', 'center');
-      r.text(`${Math.floor(this.score)} очков`, ctx.w / 2, ctx.h / 2 + 20, 18, '#cfe0ff', 'center');
-    }
     r.restore();
+    this.shell.render(ctx);
   }
 }

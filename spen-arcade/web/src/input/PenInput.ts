@@ -26,6 +26,8 @@ type EventKind = 'button_tap' | 'button_long' | 'button_down';
 type Listener = (kind: EventKind, heldMs: number) => void;
 /** Касание экрана в нормированных координатах [0;1]. */
 type TapListener = (x: number, y: number) => void;
+/** Системная кнопка «назад». Верните true, если обработали. */
+type BackListener = () => boolean;
 
 declare global {
   interface Window {
@@ -38,6 +40,7 @@ declare global {
     __spen?: {
       onEvent(kind: EventKind, held: number): void;
       onNativeReady(ok: boolean): void;
+      onBack(): string;
     };
   }
 }
@@ -75,9 +78,14 @@ export class PenInput {
   expo = 1.55;
   /** Умножитель чувствительности, настраивается игроком в меню. */
   sensitivity = 1.0;
+  /** Поменять оси местами — на случай, если разворот по ориентации не угадал. */
+  swapAxes = false;
+  invertX = false;
+  invertY = false;
 
   private listeners: Listener[] = [];
   private tapListeners: TapListener[] = [];
+  private backListeners: BackListener[] = [];
   private prevButton = false;
   private buttonDownAt = 0;
 
@@ -91,6 +99,13 @@ export class PenInput {
     window.__spen = {
       onEvent: (kind, held) => this.emit(kind, held),
       onNativeReady: (ok) => { this.state.nativeReady = ok; },
+      // Возвращаем 'exit' — тогда нативная часть закроет приложение.
+      onBack: () => {
+        for (let i = this.backListeners.length - 1; i >= 0; i--) {
+          if (this.backListeners[i]()) return 'handled';
+        }
+        return 'exit';
+      },
     };
     this.bindFallbacks();
   }
@@ -103,6 +118,12 @@ export class PenInput {
    * можно добраться пальцем.
    */
   onTap(fn: TapListener) { this.tapListeners.push(fn); }
+
+  /**
+   * Системная кнопка «назад». Последний подписавшийся получает событие
+   * первым — это всегда активная сцена.
+   */
+  onBack(fn: BackListener) { this.backListeners.push(fn); }
   private emit(kind: EventKind, held: number) {
     for (const l of this.listeners) l(kind, held);
   }
@@ -194,8 +215,13 @@ export class PenInput {
     const cx = this.fx.filter(rx - this.biasX, dt);
     const cy = this.fy.filter(ry - this.biasY, dt);
 
-    s.tiltX = this.shape(cx);
-    s.tiltY = this.shape(cy);
+    let sx = this.shape(cx);
+    let sy = this.shape(cy);
+    if (this.swapAxes) { const t = sx; sx = sy; sy = t; }
+    if (this.invertX) sx = -sx;
+    if (this.invertY) sy = -sy;
+    s.tiltX = sx;
+    s.tiltY = sy;
     s.magnitude = clamp(Math.hypot(s.tiltX, s.tiltY), 0, 1);
     s.angle = Math.atan2(s.tiltY, s.tiltX);
     s.button = btn;

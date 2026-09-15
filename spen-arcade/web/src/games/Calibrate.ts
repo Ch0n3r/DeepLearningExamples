@@ -31,6 +31,7 @@ export class Calibrate implements Scene {
 
   /** Тап по строке выбирает её; по левой/правой части — меняет значение. */
   private onTap = (x: number, y: number) => {
+    if (this.lastCtx?.scene !== this.name) return;
     const row = Math.floor((y * this.viewH - 73) / 34);
     if (row >= 0 && row < this.rows.length) {
       this.index = row;
@@ -59,11 +60,19 @@ export class Calibrate implements Scene {
       inc: (c) => this.setDead(c, c.save.deadzone + 0.01),
     },
     {
+      label: 'Поменять оси местами',
+      get: (c) => (c.save.swapAxes ? 'да' : 'нет'),
+      act: (c) => this.toggle(c, 'swapAxes'),
+    },
+    {
+      label: 'Инверсия оси X',
+      get: (c) => (c.save.invertX ? 'да' : 'нет'),
+      act: (c) => this.toggle(c, 'invertX'),
+    },
+    {
       label: 'Инверсия оси Y',
       get: (c) => (c.save.invertY ? 'да' : 'нет'),
-      dec: (c) => this.toggleInvert(c),
-      inc: (c) => this.toggleInvert(c),
-      act: (c) => this.toggleInvert(c),
+      act: (c) => this.toggle(c, 'invertY'),
     },
     {
       label: 'Задать нейтраль',
@@ -87,13 +96,24 @@ export class Calibrate implements Scene {
     c.input.deadzone = c.save.deadzone;
     persist(c.save);
   }
-  private toggleInvert(c: SceneContext) {
-    c.save.invertY = !c.save.invertY;
+  private toggle(c: SceneContext, key: 'swapAxes' | 'invertX' | 'invertY') {
+    c.save[key] = !c.save[key];
+    c.input.swapAxes = c.save.swapAxes;
+    c.input.invertX = c.save.invertX;
+    c.input.invertY = c.save.invertY;
     persist(c.save);
   }
 
   enter(ctx: SceneContext) {
-    if (!this.bound) { ctx.input.onTap(this.onTap); this.bound = true; }
+    if (!this.bound) {
+      ctx.input.onTap(this.onTap);
+      ctx.input.onBack(() => {
+        if (this.lastCtx?.scene !== this.name) return false;
+        this.lastCtx.go('hub');
+        return true;
+      });
+      this.bound = true;
+    }
     this.lastCtx = ctx;
     this.index = 0;
     this.navCooldown = 0;

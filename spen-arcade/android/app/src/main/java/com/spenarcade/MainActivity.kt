@@ -7,6 +7,7 @@ import android.view.View
 import android.view.WindowManager
 import android.webkit.WebView
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 
 class MainActivity : ComponentActivity() {
 
@@ -29,6 +30,18 @@ class MainActivity : ComponentActivity() {
         setContentView(webView)
         goFullscreen()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        // Системную кнопку «назад» отдаём игре: она сама решает, что это —
+        // пауза, выход из мини-игры или закрытие приложения из хаба.
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                webView.evaluateJavascript(
+                    "window.__spen && window.__spen.onBack ? window.__spen.onBack() : 'exit';"
+                ) { result ->
+                    if (result?.contains("exit") == true) finish()
+                }
+            }
+        })
 
         bridge = SPenBridge(this, webView)
         // Имя ровно "SPenNative" — под него написан web/src/input/PenInput.ts
