@@ -47,6 +47,15 @@ class SPenBridge(
         private const val LEAK_PER_SEC = 0.55f
         /** Доверие абсолютному hover-наклону при слиянии каналов. */
         private const val HOVER_FUSION = 0.25f
+
+        /**
+         * Через сколько без hover-событий считаем, что перо ушло от экрана.
+         *
+         * ACTION_HOVER_EXIT приходит не всегда: при резком отводе пера система
+         * может его не прислать. Без тайм-аута флаг hovering залипал бы
+         * навсегда, и канал air motion не получал бы управление уже никогда.
+         */
+        private const val HOVER_TIMEOUT_NS = 160_000_000L
         private const val LONG_PRESS_MS = 420L
 
         /**
@@ -97,6 +106,11 @@ class SPenBridge(
 
     private var buttonDownAt = 0L
     private var lastPollNs = 0L
+    private var lastHoverNs = 0L
+
+    /** Почему не удалось подключиться — показываем на экране диагностики. */
+    @Volatile private var lastError = ""
+    @Volatile private var featureButton = false
 
     private var unitManager: SpenUnitManager? = null
     private var airMotionUnit: SpenUnit? = null
@@ -110,14 +124,24 @@ class SPenBridge(
         val remote = try {
             SpenRemote.getInstance()
         } catch (e: Throwable) {
-            Log.w(TAG, "S Pen Framework недоступен: ${e.message}")
+            lastError = "S Pen Framework недоступен: ${e.message}"
+            Log.w(TAG, lastError)
             onReady(false)
             return
         }
 
+        featureButton = remote.isFeatureEnabled(SpenRemote.FEATURE_TYPE_BUTTON)
         airMotionAvailable = remote.isFeatureEnabled(SpenRemote.FEATURE_TYPE_AIR_MOTION)
         if (!airMotionAvailable) {
-            Log.w(TAG, "Air Actions не поддерживаются этим устройством")
+            lastError = "Действия в воздухе выключены или не поддерживаются"
+            Log.w(TAG, lastError)
+        }
+
+        // Повторный connect() на уже поднятом соединении — источник странных
+        // отказов, поэтому проверяем, как это делает референсная реализация.
+        if (remote.isConnected && unitManager != null) {
+            onReady(true)
+            return
         }
 
         remote.setConnectionStateChangeListener { state ->
@@ -133,23 +157,25 @@ class SPenBridge(
                 override fun onSuccess(manager: SpenUnitManager) {
                     unitManager = manager
                     connected = true
+                    lastError = ""
                     registerAirMotion(manager)
                     registerButton(manager)
                     webView.post { onReady(true) }
                 }
 
                 override fun onFailure(error: Int) {
-                    val reason = when (error) {
+                    lastError = when (error) {
                         SpenRemote.Error.UNSUPPORTED_DEVICE -> "устройство не поддерживается"
-                        SpenRemote.Error.CONNECTION_FAILED -> "не удалось подключиться"
+                        SpenRemote.Error.CONNECTION_FAILED -> "не удалось подключиться к перу"
                         else -> "неизвестная ошибка ($error)"
                     }
-                    Log.w(TAG, "S Pen Remote недоступен: $reason")
+                    Log.w(TAG, "S Pen Remote недоступен: $lastError")
                     webView.post { onReady(false) }
                 }
             })
         } catch (e: Throwable) {
-            Log.w(TAG, "connect() упал: ${e.message}")
+            lastError = "connect(): ${e.message}"
+            Log.w(TAG, lastError)
             onReady(false)
         }
     }
@@ -230,6 +256,7 @@ class SPenBridge(
     fun onHoverTilt(tiltRad: Float, orientationRad: Float, distance: Float,
                     nx: Float, ny: Float, press: Float) {
         hovering = true
+        lastHoverNs = System.nanoTime()
         hoverX = nx
         hoverY = ny
         hoverDistance = distance
@@ -298,6 +325,8 @@ class SPenBridge(
         put("connected", connected)
         put("airMotion", airMotionAvailable)
         put("hoverSeen", hoverSeen)
+        put("featureButton", featureButton)
+        put("error", lastError)
     }.toString()
 
     /**
@@ -317,6 +346,11 @@ class SPenBridge(
         val dt = if (lastPollNs == 0L) 0f
                  else ((now - lastPollNs) / 1e9f).coerceIn(0f, 0.25f)
         lastPollNs = now
+
+        // Страховка от залипшего hover: без неё air motion больше никогда
+        // не получил бы управление после первого же поднесения пера.
+        if (hovering && now - lastHoverNs > HOVER_TIMEOUT_NS) hovering = false
+
         if (dt <= 0f || hovering) return
 
         val leak = Math.pow((1f - LEAK_PER_SEC).toDouble(), dt.toDouble()).toFloat()
@@ -344,6 +378,19 @@ class SPenBridge(
 
     @JavascriptInterface
     fun vibrate(ms: Int) = Haptics.buzz(activity, ms)
+
+    /** Ручная попытка подключиться — со экрана настройки. */
+    @JavascriptInterface
+    fun reconnect() {
+        disconnect()
+        activity.runOnUiThread {
+            connect { ok ->
+                webView.evaluateJavascript(
+                    "window.__spen && window.__spen.onNativeReady($ok);", null
+                )
+            }
+        }
+    }
 
     /** Дискретные события кнопки пушим в JS, чтобы не терять быстрые тапы между кадрами. */
     private fun emitDiscrete(kind: String, held: Long) {

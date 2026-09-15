@@ -71,6 +71,11 @@ export class Calibrate implements Scene {
       act: (c) => { c.input.calibrate(); c.input.vibrate(30); c.audio.pickup(); },
     },
     {
+      label: 'Переподключить S Pen',
+      get: () => 'если наклон в воздухе не работает',
+      act: (c) => { c.input.reconnect(); c.input.vibrate(40); c.audio.tick(); },
+    },
+    {
       label: 'Назад',
       get: () => '',
       act: (c) => c.go('hub'),
@@ -198,8 +203,11 @@ export class Calibrate implements Scene {
         x0, y, 12, '#7f93b8'); y += 18;
       r.text(`hover  абс ${fmt(d.absRoll)}° / ${fmt(d.absPitch)}°   нейтраль ${fmt(d.biasRoll)}° / ${fmt(d.biasPitch)}°`,
         x0, y, 12, '#7f93b8'); y += 18;
-      if (!d.hoverSeen) {
-        r.text('hover ещё не видел перо — поднеси стилус к экрану',
+      if (typeof d.error === 'string' && d.error) {
+        r.text(`ошибка: ${d.error}`, x0, y, 12, '#ff8080'); y += 18;
+      }
+      if (!d.airMotion) {
+        r.text('Включи: Настройки → Дополнительные функции → S Pen → Действия в воздухе',
           x0, y, 12, '#ffd166');
       }
     } else {

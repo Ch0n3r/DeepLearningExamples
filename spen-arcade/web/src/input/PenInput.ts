@@ -20,6 +20,8 @@ export interface PenState {
   pressure: number;
   source: PenSource;
   nativeReady: boolean;
+  /** Доступен ли наклон вдали от экрана (Air Actions). */
+  airMotion: boolean;
 }
 
 type EventKind = 'button_tap' | 'button_long' | 'button_down';
@@ -34,6 +36,7 @@ declare global {
       calibrate(): void;
       vibrate(ms: number): void;
       debugState?(): string;
+      reconnect?(): void;
     };
     __spen?: {
       onEvent(kind: EventKind, held: number): void;
@@ -60,7 +63,7 @@ export class PenInput {
     tiltX: 0, tiltY: 0, magnitude: 0, angle: 0,
     button: false, hover: false, hoverX: 0.5, hoverY: 0.5,
     hoverDistance: 1, pressure: 0,
-    source: 'mouse', nativeReady: false,
+    source: 'mouse', nativeReady: false, airMotion: false,
   };
 
   private fx = new OneEuroFilter(1.1, 0.010);
@@ -143,6 +146,9 @@ export class PenInput {
     return out;
   }
 
+  /** Повторная попытка поднять связь с пером. */
+  reconnect() { window.SPenNative?.reconnect?.(); }
+
   vibrate(ms: number) {
     if (window.SPenNative) window.SPenNative.vibrate(ms);
     else navigator.vibrate?.(ms);
@@ -166,6 +172,7 @@ export class PenInput {
         s.hoverDistance = j.hdist; s.pressure = j.pressure;
         s.source = 'native';
         s.nativeReady = true;
+        s.airMotion = !!j.airMotion;
       } catch { /* мост отвалился — падаем на фолбэк ниже */ }
     }
 
