@@ -1,14 +1,20 @@
 import { Scene, SceneContext } from '../core/Engine';
-import { clamp, damp, TAU } from '../core/math';
+import { clamp, damp } from '../core/math';
 
 interface Card { id: string; title: string; subtitle: string; color: string; }
 
 /**
  * HUB — выбор мини-игры наклоном пера.
  *
- * Карусель: наклон влево/вправо листает, задержка на карточке >0.75 с ИЛИ
- * нажатие кнопки — запуск. Такой «dwell select» нужен, потому что в воздухе
- * у пера нет курсора: тыкать некуда, а листать наклоном — естественно.
+ * Карусель: наклон влево/вправо листает, кнопка стилуса запускает.
+ *
+ * Запуска «по задержке» здесь намеренно нет: он срабатывал сам, стоило
+ * наклону замереть около нуля, — то есть ровно тогда, когда управление
+ * не работает. Игра стартовала без ведома игрока.
+ *
+ * Дополнительно всё управляется касанием: тап по левой или правой трети
+ * листает, по центру — запускает. Это запасной путь, если наклон отказал:
+ * без него до экрана настройки и диагностики просто не добраться.
  */
 export class Hub implements Scene {
   name = 'hub';
@@ -23,7 +29,6 @@ export class Hub implements Scene {
 
   private index = 0;
   private offset = 0;      // сглаженная позиция карусели
-  private dwell = 0;
   private navCooldown = 0;
   private t = 0;
   private launching = 0;
@@ -32,15 +37,24 @@ export class Hub implements Scene {
   private onEvent = (kind: string) => {
     if (kind === 'button_tap' && !this.pendingLaunch) this.launch();
   };
+  private onTap = (x: number, _y: number) => {
+    if (this.pendingLaunch) return;
+    if (x < 0.3) this.index = Math.max(0, this.index - 1);
+    else if (x > 0.7) this.index = Math.min(this.cards.length - 1, this.index + 1);
+    else this.launch();
+  };
   private bound = false;
   private prevButton = false;
 
   enter(ctx: SceneContext) {
-    this.dwell = 0;
     this.navCooldown = 0;
     this.launching = 0;
     this.pendingLaunch = null;
-    if (!this.bound) { ctx.input.onEvent(this.onEvent); this.bound = true; }
+    if (!this.bound) {
+      ctx.input.onEvent(this.onEvent);
+      ctx.input.onTap(this.onTap);
+      this.bound = true;
+    }
     ctx.r.camX = 0; ctx.r.camY = 0; ctx.r.camZoom = 1; ctx.r.camRot = 0;
     ctx.input.calibrate();
   }
@@ -70,17 +84,8 @@ export class Hub implements Scene {
     if (this.navCooldown <= 0 && Math.abs(pen.tiltX) > 0.45) {
       this.index = clamp(this.index + Math.sign(pen.tiltX), 0, this.cards.length - 1);
       this.navCooldown = 0.32;
-      this.dwell = 0;
       audio.tick();
       ctx.input.vibrate(10);
-    }
-
-    // dwell-select: держим перо ровно — запускаем
-    if (Math.abs(pen.tiltX) < 0.22 && Math.abs(pen.tiltY) < 0.28) {
-      this.dwell += dt;
-      if (this.dwell > 1.35) this.launch();
-    } else {
-      this.dwell = Math.max(0, this.dwell - dt * 2);
     }
 
     if (pen.button && !this.prevButton) this.launch();
@@ -153,16 +158,6 @@ export class Hub implements Scene {
       g.restore();
     }
 
-    // индикатор dwell вокруг активной карточки
-    if (this.dwell > 0.05) {
-      const p = clamp(this.dwell / 1.35, 0, 1);
-      g.strokeStyle = this.cards[this.index].color;
-      g.lineWidth = 4;
-      g.beginPath();
-      g.arc(ctx.w / 2, cyy + ch / 2 + 44, 18, -Math.PI / 2, -Math.PI / 2 + TAU * p);
-      g.stroke();
-    }
-
     r.drawParticles();
     r.restore();
 
@@ -173,8 +168,12 @@ export class Hub implements Scene {
               : pen.source === 'gyro' ? 'гироскоп телефона'
               : 'мышь + пробел';
     r.text(`ввод: ${src}`, ctx.w / 2, 68, 12, '#7f93b8', 'center');
-    r.text('наклон — листать · кнопка или задержка — старт',
+    r.text('наклон или тап по краям — листать · кнопка или тап по центру — старт',
       ctx.w / 2, ctx.h - 28, 12, 'rgba(180,195,225,0.6)', 'center');
+    // Живые числа прямо в меню: если наклон не работает, это видно сразу,
+    // без захода в настройку.
+    r.text(`наклон  X ${pen.tiltX.toFixed(2)}  Y ${pen.tiltY.toFixed(2)}`,
+      20, ctx.h - 28, 12, Math.hypot(pen.tiltX, pen.tiltY) > 0.02 ? '#7dffb0' : '#ff8080');
     r.text(`монеты ${ctx.save.coins}`, ctx.w - 20, ctx.h - 28, 12, '#ffd166', 'right');
     r.restore();
 

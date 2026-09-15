@@ -41,22 +41,29 @@ class SPenBridge(
     companion object {
         private const val TAG = "SPenBridge"
 
-        /** Сколько градусов наклона считаем «полным отклонением». */
-        private const val FULL_TILT_DEG = 35f
-        /** Утечка виртуального аттитюда к нулю, доля в секунду. */
+        /** Сколько градусов hover-наклона считаем «полным отклонением». */
+        private const val FULL_TILT_DEG = 32f
+        /** Утечка накопленного отклонения к нулю, доля в секунду. */
         private const val LEAK_PER_SEC = 0.55f
         /** Доверие абсолютному hover-наклону при слиянии каналов. */
-        private const val HOVER_FUSION = 0.22f
-        /** Дельты ниже порога — шум покоящегося пера. */
-        private const val MOTION_DEADZONE_DEG = 0.06f
+        private const val HOVER_FUSION = 0.25f
         private const val LONG_PRESS_MS = 420L
+
+        /**
+         * Во что превращать дельты air motion.
+         *
+         * getDeltaX/getDeltaY отдают НЕ градусы, а долю в диапазоне -1..1, где
+         * 1.0 — это примерно «провести пером через весь экран». Реальные
+         * значения за событие — тысячные и сотые. Здесь накапливаем их
+         * в отклонение [-1;1], где комфортный взмах кистью (суммарно ~0.35)
+         * даёт полное отклонение.
+         */
+        private const val AIR_GAIN = 3.0f
     }
 
     // ---- состояние, читаемое из JS ------------------------------------------
     @Volatile private var tiltX = 0f
     @Volatile private var tiltY = 0f
-    @Volatile private var rawPitchDeg = 0f
-    @Volatile private var rawRollDeg = 0f
     @Volatile private var buttonDown = false
     @Volatile private var hovering = false
     @Volatile private var hoverX = 0.5f
@@ -77,8 +84,18 @@ class SPenBridge(
     @Volatile private var biasPitchDeg = 0f
     @Volatile private var hoverSeen = false
 
+    /** Канал air motion в нормированных единицах [-1;1]. */
+    @Volatile private var airX = 0f
+    @Volatile private var airY = 0f
+
+    // Диагностика: без неё невозможно отличить «события не приходят»
+    // от «приходят, но мы их неправильно масштабируем».
+    @Volatile private var airEvents = 0L
+    @Volatile private var lastDx = 0f
+    @Volatile private var lastDy = 0f
+    @Volatile private var maxDelta = 0f
+
     private var buttonDownAt = 0L
-    private var lastMotionNs = 0L
     private var lastPollNs = 0L
 
     private var unitManager: SpenUnitManager? = null
@@ -142,11 +159,7 @@ class SPenBridge(
         airMotionUnit = unit
         manager.registerSpenEventListener(SpenEventListener { event: SpenEvent ->
             val air = AirMotionEvent(event)
-            val now = System.nanoTime()
-            val dt = if (lastMotionNs == 0L) 1f / 90f
-                     else ((now - lastMotionNs) / 1e9f).coerceIn(1f / 240f, 0.05f)
-            lastMotionNs = now
-            integrateAirMotion(air.deltaX, air.deltaY, dt)
+            accumulateAirMotion(air.deltaX, air.deltaY)
         }, unit)
     }
 
@@ -170,26 +183,43 @@ class SPenBridge(
     }
 
     /**
-     * Интегрирование дельт воздушного жеста в виртуальный угол наклона.
+     * Накопление дельт воздушного жеста в отклонение.
      *
-     * Угол += дельта, затем экспоненциальная утечка к нулю. Утечка делает
-     * управление самоцентрирующимся: игрок возвращает перо в нейтраль
-     * естественным движением, а не ищет точку калибровки.
+     * Никакой мёртвой зоны здесь нет намеренно: дельты приходят порядка
+     * тысячных, и любой осмысленный порог просто съел бы весь сигнал.
+     * Дрожь гасится утечкой в decay() и фильтром One Euro на стороне игры.
+     *
+     * Утечка живёт НЕ здесь, а в decay(), который тикает каждый кадр:
+     * иначе, когда игрок перестаёт двигать пером, события прекращаются
+     * и последнее отклонение застывает навсегда.
      */
-    private fun integrateAirMotion(deltaX: Float, deltaY: Float, dt: Float) {
-        val dx = if (abs(deltaX) < MOTION_DEADZONE_DEG) 0f else deltaX
-        val dy = if (abs(deltaY) < MOTION_DEADZONE_DEG) 0f else deltaY
+    private fun accumulateAirMotion(deltaX: Float, deltaY: Float) {
+        airEvents++
+        lastDx = deltaX
+        lastDy = deltaY
+        val mag = maxOf(abs(deltaX), abs(deltaY))
+        if (mag > maxDelta) maxDelta = mag
 
-        val leak = Math.pow((1f - LEAK_PER_SEC).toDouble(), dt.toDouble()).toFloat()
-        rawRollDeg = (rawRollDeg + dx) * leak
-        rawPitchDeg = (rawPitchDeg + dy) * leak
+        airX = (airX + deltaX * AIR_GAIN).coerceIn(-1.4f, 1.4f)
+        airY = (airY + deltaY * AIR_GAIN).coerceIn(-1.4f, 1.4f)
+        publish()
+    }
 
-        val cap = FULL_TILT_DEG * 1.6f
-        rawRollDeg = rawRollDeg.coerceIn(-cap, cap)
-        rawPitchDeg = rawPitchDeg.coerceIn(-cap, cap)
-
-        tiltX = (rawRollDeg / FULL_TILT_DEG).coerceIn(-1f, 1f)
-        tiltY = (rawPitchDeg / FULL_TILT_DEG).coerceIn(-1f, 1f)
+    /** Сводит оба канала в итоговый наклон. Hover, когда он есть, — истина. */
+    private fun publish() {
+        if (hovering) {
+            val hx = ((absRollDeg - biasRollDeg) / FULL_TILT_DEG).coerceIn(-1f, 1f)
+            val hy = ((absPitchDeg - biasPitchDeg) / FULL_TILT_DEG).coerceIn(-1f, 1f)
+            // Держим air-канал синхронно, чтобы при выходе из hover
+            // управление не прыгнуло на старое накопленное значение.
+            airX += (hx - airX) * HOVER_FUSION
+            airY += (hy - airY) * HOVER_FUSION
+            tiltX = hx
+            tiltY = hy
+        } else {
+            tiltX = airX.coerceIn(-1f, 1f)
+            tiltY = airY.coerceIn(-1f, 1f)
+        }
         seq++
     }
 
@@ -219,16 +249,7 @@ class SPenBridge(
             biasPitchDeg = absPitchDeg
         }
 
-        // Сливаемся с ОТКЛОНЕНИЕМ от нейтрали, а не с абсолютным углом.
-        val ax = absRollDeg - biasRollDeg
-        val ay = absPitchDeg - biasPitchDeg
-
-        rawRollDeg += (ax - rawRollDeg) * HOVER_FUSION
-        rawPitchDeg += (ay - rawPitchDeg) * HOVER_FUSION
-
-        tiltX = (rawRollDeg / FULL_TILT_DEG).coerceIn(-1f, 1f)
-        tiltY = (rawPitchDeg / FULL_TILT_DEG).coerceIn(-1f, 1f)
-        seq++
+        publish()
     }
 
     fun onHoverExit() { hovering = false }
@@ -253,7 +274,7 @@ class SPenBridge(
     /** Текущее положение пера принимается за нейтраль по обоим каналам. */
     @JavascriptInterface
     fun calibrate() {
-        rawPitchDeg = 0f; rawRollDeg = 0f
+        airX = 0f; airY = 0f
         tiltX = 0f; tiltY = 0f
         if (hoverSeen) {
             biasRollDeg = absRollDeg
@@ -268,8 +289,12 @@ class SPenBridge(
         put("absPitch", absPitchDeg)
         put("biasRoll", biasRollDeg)
         put("biasPitch", biasPitchDeg)
-        put("intRoll", rawRollDeg)
-        put("intPitch", rawPitchDeg)
+        put("airX", airX)
+        put("airY", airY)
+        put("airEvents", airEvents)
+        put("lastDx", lastDx)
+        put("lastDy", lastDy)
+        put("maxDelta", maxDelta)
         put("connected", connected)
         put("airMotion", airMotionAvailable)
         put("hoverSeen", hoverSeen)
@@ -281,30 +306,29 @@ class SPenBridge(
      * а строка парсится за ~10 мкс и не создаёт GC-давления.
      */
     /**
-     * Затухание к нейтрали, когда ни один канал не активен.
+     * Утечка накопленного отклонения к нулю. Тикает каждый кадр из pollState.
      *
-     * Без этого при выходе пера из зоны hover на устройстве без Air Actions
-     * последний угол остаётся навсегда: самолёт продолжает крениться, хотя
-     * перо давно лежит на столе. Air motion гасит сам себя утечкой внутри
-     * integrateAirMotion, здесь закрываем второй случай.
+     * Делает управление самоцентрирующимся: игрок возвращает перо в нейтраль
+     * естественным движением, а не ищет точку калибровки. И заодно
+     * не даёт отклонению застыть, когда события перестали приходить.
      */
-    private fun decayIfIdle() {
+    private fun decay() {
         val now = System.nanoTime()
         val dt = if (lastPollNs == 0L) 0f
                  else ((now - lastPollNs) / 1e9f).coerceIn(0f, 0.25f)
         lastPollNs = now
-        if (hovering || connected || dt <= 0f) return
+        if (dt <= 0f || hovering) return
 
         val leak = Math.pow((1f - LEAK_PER_SEC).toDouble(), dt.toDouble()).toFloat()
-        rawRollDeg *= leak
-        rawPitchDeg *= leak
-        tiltX = (rawRollDeg / FULL_TILT_DEG).coerceIn(-1f, 1f)
-        tiltY = (rawPitchDeg / FULL_TILT_DEG).coerceIn(-1f, 1f)
+        airX *= leak
+        airY *= leak
+        tiltX = airX.coerceIn(-1f, 1f)
+        tiltY = airY.coerceIn(-1f, 1f)
     }
 
     @JavascriptInterface
     fun pollState(): String = JSONObject().apply {
-        decayIfIdle()
+        decay()
         put("ok", true)
         put("tiltX", tiltX)
         put("tiltY", tiltY)
@@ -316,7 +340,6 @@ class SPenBridge(
         put("pressure", pressure)
         put("seq", seq)
         put("airMotion", airMotionAvailable && connected)
-        put("tiltDeg", Math.hypot(rawRollDeg.toDouble(), rawPitchDeg.toDouble()))
     }.toString()
 
     @JavascriptInterface

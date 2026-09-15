@@ -24,6 +24,8 @@ export interface PenState {
 
 type EventKind = 'button_tap' | 'button_long' | 'button_down';
 type Listener = (kind: EventKind, heldMs: number) => void;
+/** Касание экрана в нормированных координатах [0;1]. */
+type TapListener = (x: number, y: number) => void;
 
 declare global {
   interface Window {
@@ -75,6 +77,7 @@ export class PenInput {
   sensitivity = 1.0;
 
   private listeners: Listener[] = [];
+  private tapListeners: TapListener[] = [];
   private prevButton = false;
   private buttonDownAt = 0;
 
@@ -93,6 +96,13 @@ export class PenInput {
   }
 
   onEvent(fn: Listener) { this.listeners.push(fn); }
+
+  /**
+   * Касание экрана. Нужно как запасной путь управления в меню: если наклон
+   * по какой-то причине не работает, до настройки и диагностики всё равно
+   * можно добраться пальцем.
+   */
+  onTap(fn: TapListener) { this.tapListeners.push(fn); }
   private emit(kind: EventKind, held: number) {
     for (const l of this.listeners) l(kind, held);
   }
@@ -239,6 +249,13 @@ export class PenInput {
     }, { passive: true });
 
     c.addEventListener('pointerdown', (e) => {
+      const r = c.getBoundingClientRect();
+      const nx = (e.clientX - r.left) / r.width;
+      const ny = (e.clientY - r.top) / r.height;
+      this.state.hoverX = nx;
+      this.state.hoverY = ny;
+      for (const l of this.tapListeners) l(nx, ny);
+
       this.pointerButton = true;
       // Кнопка стилуса в вебе приходит как button===5 / buttons&32 (barrel button)
       if (e.pointerType === 'pen' && (e.buttons & 32) !== 0) this.pointerButton = true;

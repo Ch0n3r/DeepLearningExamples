@@ -27,6 +27,23 @@ export class Calibrate implements Scene {
   private navCooldown = 0;
   private trail: { x: number; y: number }[] = [];
   private prevButton = false;
+  private bound = false;
+
+  /** Тап по строке выбирает её; по левой/правой части — меняет значение. */
+  private onTap = (x: number, y: number) => {
+    const row = Math.floor((y * this.viewH - 73) / 34);
+    if (row >= 0 && row < this.rows.length) {
+      this.index = row;
+      const ctx = this.lastCtx;
+      if (!ctx) return;
+      const r = this.rows[row];
+      // Правая часть строки — увеличить или выполнить, левая — уменьшить.
+      if (x > 0.42) { if (r.inc) r.inc(ctx); else r.act?.(ctx); }
+      else if (x > 0.22) { if (r.dec) r.dec(ctx); else r.act?.(ctx); }
+    }
+  };
+  private viewH = 1;
+  private lastCtx: SceneContext | null = null;
 
   private rows: Row[] = [
     {
@@ -76,6 +93,8 @@ export class Calibrate implements Scene {
   }
 
   enter(ctx: SceneContext) {
+    if (!this.bound) { ctx.input.onTap(this.onTap); this.bound = true; }
+    this.lastCtx = ctx;
     this.index = 0;
     this.navCooldown = 0;
     this.trail = [];
@@ -84,6 +103,8 @@ export class Calibrate implements Scene {
 
   update(ctx: SceneContext, dt: number) {
     const { pen } = ctx;
+    this.lastCtx = ctx;
+    this.viewH = ctx.h;
     this.navCooldown -= dt;
 
     if (this.navCooldown <= 0) {
@@ -168,9 +189,15 @@ export class Calibrate implements Scene {
     if (d.connected !== undefined) {
       r.text(`SDK подключён: ${d.connected ? 'да' : 'нет'} · Air Actions: ${d.airMotion ? 'да' : 'нет'}`,
         x0, y, 12, d.connected ? '#7dffb0' : '#ff8080'); y += 20;
-      r.text(`абс. наклон  крен ${fmt(d.absRoll)}°  тангаж ${fmt(d.absPitch)}°`, x0, y, 12, '#7f93b8'); y += 18;
-      r.text(`нейтраль     крен ${fmt(d.biasRoll)}°  тангаж ${fmt(d.biasPitch)}°`, x0, y, 12, '#7f93b8'); y += 18;
-      r.text(`итог         крен ${fmt(d.intRoll)}°  тангаж ${fmt(d.intPitch)}°`, x0, y, 12, '#7f93b8'); y += 18;
+      // Счётчик событий — главный индикатор: он сразу разделяет
+      // «данные не приходят» и «приходят, но мы их не так считаем».
+      const events = typeof d.airEvents === 'number' ? d.airEvents : 0;
+      r.text(`air motion: ${events} событий  последняя дельта ${fmt(d.lastDx, 4)} / ${fmt(d.lastDy, 4)}`,
+        x0, y, 12, events > 0 ? '#7dffb0' : '#ff8080'); y += 18;
+      r.text(`макс. дельта ${fmt(d.maxDelta, 4)}   накоплено X ${fmt(d.airX, 2)} Y ${fmt(d.airY, 2)}`,
+        x0, y, 12, '#7f93b8'); y += 18;
+      r.text(`hover  абс ${fmt(d.absRoll)}° / ${fmt(d.absPitch)}°   нейтраль ${fmt(d.biasRoll)}° / ${fmt(d.biasPitch)}°`,
+        x0, y, 12, '#7f93b8'); y += 18;
       if (!d.hoverSeen) {
         r.text('hover ещё не видел перо — поднеси стилус к экрану',
           x0, y, 12, '#ffd166');
