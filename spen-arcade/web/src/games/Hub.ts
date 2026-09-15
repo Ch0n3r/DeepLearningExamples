@@ -175,15 +175,6 @@ export class Hub implements Scene {
     r.text(`наклон  X ${pen.tiltX.toFixed(2)}  Y ${pen.tiltY.toFixed(2)}`,
       20, ctx.h - 28, 12, Math.hypot(pen.tiltX, pen.tiltY) > 0.02 ? '#7dffb0' : '#ff8080');
     r.text(`монеты ${ctx.save.coins}`, ctx.w - 20, ctx.h - 28, 12, '#ffd166', 'right');
-
-    // Наклон в воздухе требует включённых Air Actions. Если их нет, игра
-    // работает только у экрана — и лучше сказать это прямо, чем дать
-    // игроку гадать, почему перо не слушается.
-    if (pen.source === 'native' && !pen.airMotion) {
-      r.roundRect(12, 84, ctx.w - 24, 30, 8, 'rgba(255,120,80,0.16)');
-      r.text('наклон в воздухе выключен — открой НАСТРОЙКА',
-        ctx.w / 2, 99, 12, '#ffb08a', 'center');
-    }
     r.restore();
 
   }

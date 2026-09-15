@@ -35,7 +35,15 @@ class MainActivity : ComponentActivity() {
         webView.addJavascriptInterface(bridge, "SPenNative")
         HoverTiltTracker(bridge).attach(webView)
 
-        // Билд веб-части лежит в app/src/main/assets/game/
+        bridge.connect { connected ->
+            webView.post {
+                webView.evaluateJavascript(
+                    "window.__spen && window.__spen.onNativeReady($connected);", null
+                )
+            }
+        }
+
+        // Билд из AI Studio кладём в app/src/main/assets/game/
         webView.loadUrl("file:///android_asset/game/index.html")
     }
 
@@ -48,29 +56,13 @@ class MainActivity : ComponentActivity() {
             )
     }
 
-    /**
-     * Подключаемся именно здесь, а не в onCreate.
-     *
-     * В onCreate окно ещё не готово, и привязка к сервису S Pen может не
-     * состояться. Вдобавок только так подхватываются случаи, когда перо
-     * достали из слота или включили «Действия в воздухе» уже после запуска:
-     * каждый возврат в приложение — новая попытка.
-     */
     override fun onResume() {
         super.onResume()
         goFullscreen()
         webView.onResume()
-        bridge.connect { ok ->
-            webView.post {
-                webView.evaluateJavascript(
-                    "window.__spen && window.__spen.onNativeReady($ok);", null
-                )
-            }
-        }
     }
 
     override fun onPause() {
-        bridge.disconnect()
         webView.onPause()
         super.onPause()
     }
