@@ -67,8 +67,19 @@ class SPenBridge(
     @Volatile private var airMotionAvailable = false
     @Volatile private var connected = false
 
+    // Абсолютный наклон, как его отдаёт hover, и запомненная нейтраль.
+    // Перо в руке естественно лежит под 40-50° к перпендикуляру экрана,
+    // поэтому «ноль» — это НЕ вертикальное перо, а то положение, в котором
+    // игрок держал стилус в момент калибровки.
+    @Volatile private var absRollDeg = 0f
+    @Volatile private var absPitchDeg = 0f
+    @Volatile private var biasRollDeg = 0f
+    @Volatile private var biasPitchDeg = 0f
+    @Volatile private var hoverSeen = false
+
     private var buttonDownAt = 0L
     private var lastMotionNs = 0L
+    private var lastPollNs = 0L
 
     private var unitManager: SpenUnitManager? = null
     private var airMotionUnit: SpenUnit? = null
@@ -195,9 +206,22 @@ class SPenBridge(
         pressure = press
 
         // AXIS_TILT — угол от перпендикуляра к экрану, getOrientation() — куда наклонён.
+        // Раскладываем на две оси так же, как это делает PointerEvent в вебе.
         val deg = Math.toDegrees(tiltRad.toDouble()).toFloat()
-        val ax = (deg * Math.sin(orientationRad.toDouble())).toFloat()
-        val ay = (-deg * Math.cos(orientationRad.toDouble())).toFloat()
+        absRollDeg = (deg * Math.sin(orientationRad.toDouble())).toFloat()
+        absPitchDeg = (-deg * Math.cos(orientationRad.toDouble())).toFloat()
+
+        // Первое же hover-событие задаёт нейтраль, если её ещё не брали:
+        // иначе игрок стартует с максимальным отклонением в одну сторону.
+        if (!hoverSeen) {
+            hoverSeen = true
+            biasRollDeg = absRollDeg
+            biasPitchDeg = absPitchDeg
+        }
+
+        // Сливаемся с ОТКЛОНЕНИЕМ от нейтрали, а не с абсолютным углом.
+        val ax = absRollDeg - biasRollDeg
+        val ay = absPitchDeg - biasPitchDeg
 
         rawRollDeg += (ax - rawRollDeg) * HOVER_FUSION
         rawPitchDeg += (ay - rawPitchDeg) * HOVER_FUSION
@@ -226,19 +250,61 @@ class SPenBridge(
         }
     }
 
+    /** Текущее положение пера принимается за нейтраль по обоим каналам. */
     @JavascriptInterface
     fun calibrate() {
         rawPitchDeg = 0f; rawRollDeg = 0f
         tiltX = 0f; tiltY = 0f
+        if (hoverSeen) {
+            biasRollDeg = absRollDeg
+            biasPitchDeg = absPitchDeg
+        }
     }
+
+    /** Сырые значения для экрана диагностики в игре. */
+    @JavascriptInterface
+    fun debugState(): String = JSONObject().apply {
+        put("absRoll", absRollDeg)
+        put("absPitch", absPitchDeg)
+        put("biasRoll", biasRollDeg)
+        put("biasPitch", biasPitchDeg)
+        put("intRoll", rawRollDeg)
+        put("intPitch", rawPitchDeg)
+        put("connected", connected)
+        put("airMotion", airMotionAvailable)
+        put("hoverSeen", hoverSeen)
+    }.toString()
 
     /**
      * Единственный метод, который JS дёргает каждый кадр.
      * Возвращаем JSON-строку: @JavascriptInterface не умеет структуры,
      * а строка парсится за ~10 мкс и не создаёт GC-давления.
      */
+    /**
+     * Затухание к нейтрали, когда ни один канал не активен.
+     *
+     * Без этого при выходе пера из зоны hover на устройстве без Air Actions
+     * последний угол остаётся навсегда: самолёт продолжает крениться, хотя
+     * перо давно лежит на столе. Air motion гасит сам себя утечкой внутри
+     * integrateAirMotion, здесь закрываем второй случай.
+     */
+    private fun decayIfIdle() {
+        val now = System.nanoTime()
+        val dt = if (lastPollNs == 0L) 0f
+                 else ((now - lastPollNs) / 1e9f).coerceIn(0f, 0.25f)
+        lastPollNs = now
+        if (hovering || connected || dt <= 0f) return
+
+        val leak = Math.pow((1f - LEAK_PER_SEC).toDouble(), dt.toDouble()).toFloat()
+        rawRollDeg *= leak
+        rawPitchDeg *= leak
+        tiltX = (rawRollDeg / FULL_TILT_DEG).coerceIn(-1f, 1f)
+        tiltY = (rawPitchDeg / FULL_TILT_DEG).coerceIn(-1f, 1f)
+    }
+
     @JavascriptInterface
     fun pollState(): String = JSONObject().apply {
+        decayIfIdle()
         put("ok", true)
         put("tiltX", tiltX)
         put("tiltY", tiltY)
@@ -250,6 +316,7 @@ class SPenBridge(
         put("pressure", pressure)
         put("seq", seq)
         put("airMotion", airMotionAvailable && connected)
+        put("tiltDeg", Math.hypot(rawRollDeg.toDouble(), rawPitchDeg.toDouble()))
     }.toString()
 
     @JavascriptInterface

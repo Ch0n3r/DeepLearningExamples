@@ -18,6 +18,7 @@ export class Hub implements Scene {
     { id: 'race',  title: 'TILT RACER',  subtitle: 'от себя — газ, кнопка — ручник',  color: '#7dffb0' },
     { id: 'hunt',  title: 'BIRD HUNT',   subtitle: 'наклон — прицел, тап — выстрел',  color: '#ffd166' },
     { id: 'runes', title: 'INK RUNES',   subtitle: 'зажми и рисуй руну в воздухе',    color: '#b388ff' },
+    { id: 'calibrate', title: 'НАСТРОЙКА', subtitle: 'отклик пера и нейтраль',         color: '#8fa5d8' },
   ];
 
   private index = 0;

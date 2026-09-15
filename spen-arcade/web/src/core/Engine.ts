@@ -29,6 +29,7 @@ export interface SaveData {
   best: Record<string, number>;
   coins: number;
   sensitivity: number;
+  deadzone: number;
   invertY: boolean;
   unlocked: string[];
 }
@@ -36,7 +37,9 @@ export interface SaveData {
 const SAVE_KEY = 'spen-arcade-v1';
 
 function loadSave(): SaveData {
-  const fallback: SaveData = { best: {}, coins: 0, sensitivity: 1, invertY: false, unlocked: ['sky'] };
+  const fallback: SaveData = {
+    best: {}, coins: 0, sensitivity: 1, deadzone: 0.07, invertY: false, unlocked: ['sky'],
+  };
   try {
     const raw = localStorage.getItem(SAVE_KEY);
     return raw ? { ...fallback, ...JSON.parse(raw) } : fallback;
@@ -84,6 +87,7 @@ export class Engine {
       go: (name, payload) => this.switchTo(name, payload),
     };
     input.sensitivity = save.sensitivity;
+    input.deadzone = save.deadzone;
   }
 
   register(scene: Scene) { this.scenes.set(scene.name, scene); return this; }

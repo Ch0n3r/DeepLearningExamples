@@ -7,6 +7,7 @@ import { SkyDrifter } from './games/SkyDrifter';
 import { TiltRacer } from './games/TiltRacer';
 import { BirdHunt } from './games/BirdHunt';
 import { InkRunes } from './games/InkRunes';
+import { Calibrate } from './games/Calibrate';
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 const gate = document.getElementById('gate') as HTMLDivElement;
@@ -21,7 +22,8 @@ const engine = new Engine(input, renderer, audio)
   .register(new SkyDrifter())
   .register(new TiltRacer())
   .register(new BirdHunt())
-  .register(new InkRunes());
+  .register(new InkRunes())
+  .register(new Calibrate());
 
 /**
  * Стартовый экран обязателен: WebAudio и DeviceOrientation в вебе

@@ -31,6 +31,7 @@ declare global {
       pollState(): string;
       calibrate(): void;
       vibrate(ms: number): void;
+      debugState?(): string;
     };
     __spen?: {
       onEvent(kind: EventKind, held: number): void;
@@ -96,13 +97,40 @@ export class PenInput {
     for (const l of this.listeners) l(kind, held);
   }
 
-  /** Текущее положение пера принимается за нейтраль. */
+  /**
+   * Текущее положение пера принимается за нейтраль.
+   *
+   * Смещение снимается РОВНО ОДИН РАЗ. Нативный мост обнуляет угол у себя,
+   * поэтому вычитать здесь ещё и старое значение нельзя — иначе получится
+   * постоянный сдвиг на величину этого значения.
+   */
   calibrate() {
-    window.SPenNative?.calibrate();
-    this.biasX = this.rawX;
-    this.biasY = this.rawY;
+    if (window.SPenNative) {
+      window.SPenNative.calibrate();
+      this.biasX = 0;
+      this.biasY = 0;
+    } else {
+      // PointerEvent отдаёт АБСОЛЮТНЫЙ угол стилуса, а перо в руке лежит
+      // под 40-50° к экрану. Без вычитания нейтрали управление сразу
+      // упирается в максимум.
+      this.biasX = this.rawX;
+      this.biasY = this.rawY;
+    }
     this.fx.reset(0);
     this.fy.reset(0);
+  }
+
+  /** Сырые данные для экрана диагностики. */
+  debug(): Record<string, unknown> {
+    const out: Record<string, unknown> = {
+      rawX: this.rawX, rawY: this.rawY,
+      biasX: this.biasX, biasY: this.biasY,
+      source: this.state.source,
+    };
+    if (window.SPenNative?.debugState) {
+      try { Object.assign(out, JSON.parse(window.SPenNative.debugState())); } catch { /* нет моста */ }
+    }
+    return out;
   }
 
   vibrate(ms: number) {
