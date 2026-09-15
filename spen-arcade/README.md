@@ -75,7 +75,8 @@ cd web && npm install && npm run dev
 ```
 Мышь двигает наклон, пробел — кнопка стилуса.
 
-Android: см. `android/SETUP.md`.
+APK: см. `android/SETUP.md` — сборка через GitHub Actions одной кнопкой,
+Samsung SDK скачивать не обязательно.
 
 ## Промпт для Gemini в AI Studio
 

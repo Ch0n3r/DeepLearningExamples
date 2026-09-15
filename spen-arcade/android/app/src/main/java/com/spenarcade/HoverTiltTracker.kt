@@ -43,6 +43,10 @@ class HoverTiltTracker(private val bridge: SPenBridge) {
         if (rawDist > maxDistanceSeen) maxDistanceSeen = rawDist
         val dist = (rawDist / maxDistanceSeen).coerceIn(0f, 1f)
 
+        // Боковая кнопка пера без SDK: Android отдаёт её как BUTTON_STYLUS_PRIMARY,
+        // но только пока перо в зоне hover или касается экрана.
+        bridge.onStylusButton((e.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0)
+
         val nx = (e.x / view.width.coerceAtLeast(1)).coerceIn(0f, 1f)
         val ny = (e.y / view.height.coerceAtLeast(1)).coerceIn(0f, 1f)
 
