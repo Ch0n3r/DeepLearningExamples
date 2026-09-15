@@ -2,6 +2,16 @@ import { Scene, SceneContext } from '../core/Engine';
 import { Shell } from '../core/Shell';
 import { clamp, damp, fbm, lerp, makeNoise1D, makeRng, TAU } from '../core/math';
 
+/** Смешение двух hex-цветов. Нужно для плавной смены времени суток. */
+function mix(a: string, b: string, t: number): string {
+  const pa = parseInt(a.slice(1), 16);
+  const pb = parseInt(b.slice(1), 16);
+  const ch = (sh: number) => Math.round(
+    lerp((pa >> sh) & 255, (pb >> sh) & 255, t)
+  );
+  return `rgb(${ch(16)},${ch(8)},${ch(0)})`;
+}
+
 interface Ring { x: number; y: number; r: number; taken: boolean; }
 interface Rock { x: number; y: number; r: number; spin: number; }
 
@@ -44,6 +54,9 @@ export class SkyDrifter implements Scene {
   private alive = true;
   private deadTimer = 0;
   private spawnCursor = 0;
+  /** Звёзды дальнего плана. Хранятся в мировых координатах и зацикливаются
+   *  по мере полёта — так не нужен бесконечный массив. */
+  private stars: { x: number; y: number; z: number }[] = [];
   private shell = new Shell('sky', () => this.restart());
   private ctxRef: SceneContext | null = null;
 
@@ -52,8 +65,10 @@ export class SkyDrifter implements Scene {
 
   private static readonly BASE_SPEED = 260;
   private static readonly BOOST_SPEED = 520;
-  private static readonly TURN_ACCEL = 9.5;   // рад/с² при полном наклоне
-  private static readonly VERT_ACCEL = 900;   // px/с²
+  private static readonly VERT_ACCEL = 1000;  // px/с² при полном наклоне
+  /** Насколько наклон вбок меняет ход относительно крейсерского. */
+  private static readonly SPEED_RANGE = 170;
+  private static readonly MIN_SPEED = 120;
   private static readonly SEG = 40;           // шаг сэмплирования каньона, px
 
   enter(ctx: SceneContext) {
@@ -79,6 +94,10 @@ export class SkyDrifter implements Scene {
     this.heading = 0; this.roll = 0; this.speed = SkyDrifter.BASE_SPEED;
     this.heat = 0; this.overheated = false; this.shield = 1.5;
     this.rings = []; this.rocks = [];
+    this.stars = [];
+    for (let i = 0; i < 140; i++) {
+      this.stars.push({ x: this.rng() * 2400, y: (this.rng() * 2 - 1) * 900, z: 0.15 + this.rng() * 0.5 });
+    }
     this.distance = 0; this.score = 0; this.combo = 1; this.comboTimer = 0;
     this.alive = true; this.deadTimer = 0; this.spawnCursor = 0;
 
@@ -126,28 +145,37 @@ export class SkyDrifter implements Scene {
       this.heat = clamp(this.heat - dt * 0.30, 0, 1);
       if (this.overheated && this.heat < 0.25) this.overheated = false;
     }
-    const target = wantBoost ? SkyDrifter.BOOST_SPEED : SkyDrifter.BASE_SPEED;
-    this.speed = damp(this.speed, target, wantBoost ? 0.18 : 0.5, dt);
-
-    // --- угловая динамика от наклона --------------------------------------
+    // --- управление --------------------------------------------------------
+    //
+    // Две оси разведены честно:
+    //   наклон вперёд/назад — нос вверх и вниз;
+    //   наклон влево/вправо — ход вперёд и назад, самолёт ездит по экрану.
+    //
+    // Раньше tiltX крутил heading, а синус heading прибавлялся к вертикальной
+    // скорости — из-за чего наклон вбок поднимал машину, а горизонтального
+    // управления не было вовсе: скорость держалась константой.
     const tiltY = pen.tiltY;
-    // Крен тем эффективнее, чем выше скорость: на форсаже самолёт «острее».
-    const authority = lerp(0.75, 1.25, (this.speed - SkyDrifter.BASE_SPEED) /
-                                        (SkyDrifter.BOOST_SPEED - SkyDrifter.BASE_SPEED));
-    this.heading += pen.tiltX * SkyDrifter.TURN_ACCEL * authority * dt;
-    this.heading = clamp(this.heading, -0.95, 0.95); // не даём развернуться назад
-    this.heading = damp(this.heading, this.heading * 0.86, 0.6, dt); // авто-выравнивание
 
-    this.vy += (tiltY * SkyDrifter.VERT_ACCEL + Math.sin(this.heading) * this.speed * 1.4) * dt;
-    this.vy = damp(this.vy, this.vy * 0.9, 0.35, dt);
-    this.vy = clamp(this.vy, -620, 620);
+    // Вертикаль: наклон задаёт ускорение, не позицию — так чувствуется полёт.
+    this.vy += tiltY * SkyDrifter.VERT_ACCEL * dt;
+    this.vy = damp(this.vy, this.vy * 0.88, 0.32, dt);
+    this.vy = clamp(this.vy, -640, 640);
+
+    // Горизонталь: наклон вбок сдвигает целевую скорость относительно потока.
+    const cruise = wantBoost ? SkyDrifter.BOOST_SPEED : SkyDrifter.BASE_SPEED;
+    const target = cruise + pen.tiltX * SkyDrifter.SPEED_RANGE;
+    this.speed = damp(this.speed, target, wantBoost ? 0.16 : 0.26, dt);
+    this.speed = clamp(this.speed, SkyDrifter.MIN_SPEED, SkyDrifter.BOOST_SPEED * 1.15);
     this.vx = this.speed;
 
     this.px += this.vx * dt;
     this.py += this.vy * dt;
     this.distance = this.px;
 
-    this.roll = damp(this.roll, pen.tiltX * 0.85 + this.vy * 0.0006, 0.09, dt);
+    // Нос смотрит туда, куда самолёт реально летит.
+    this.heading = damp(this.heading, Math.atan2(this.vy, this.vx), 0.07, dt);
+
+    this.roll = damp(this.roll, pen.tiltX * 0.7, 0.1, dt);
 
     // --- мир ---------------------------------------------------------------
     this.generateAhead(ctx);
@@ -195,6 +223,7 @@ export class SkyDrifter implements Scene {
         this.score += 50 * this.combo;
         ctx.save.coins += 1;
         audio.pickup();
+        r.popup(ring.x, ring.y - 20, `+${50 * this.combo}`, '#ffd166');
         r.burst(ring.x, ring.y, 14, 220, '#ffd166', 0.5);
         ctx.input.vibrate(12);
       }
@@ -207,7 +236,7 @@ export class SkyDrifter implements Scene {
     this.shield = Math.max(0, this.shield - dt * 0);
 
     // камера ведёт с опережением по курсу — игрок видит, куда летит
-    r.camX = damp(r.camX, this.px + 210 + this.speed * 0.25, 0.12, dt);
+    r.camX = damp(r.camX, this.px + 180 + this.speed * 0.30, 0.16, dt);
     r.camY = damp(r.camY, this.py + this.vy * 0.18, 0.14, dt);
     r.camZoom = damp(r.camZoom, wantBoost ? 0.88 : 1, 0.3, dt);
     r.camRot = damp(r.camRot, this.roll * 0.05, 0.2, dt);
@@ -259,7 +288,28 @@ export class SkyDrifter implements Scene {
   render(ctx: SceneContext, alpha: number) {
     const { r } = ctx;
     const g = r.ctx;
-    r.clear('#070a16');
+
+    // Небо теплеет с дистанцией: полёт из ночи в рассвет читается как прогресс.
+    const dayT = clamp(this.distance / 45000, 0, 1);
+    const sky = g.createLinearGradient(0, 0, 0, ctx.h);
+    sky.addColorStop(0, mix('#05070f', '#2a1c4a', dayT));
+    sky.addColorStop(0.6, mix('#0a1024', '#6b3b6e', dayT));
+    sky.addColorStop(1, mix('#111a3a', '#c9724a', dayT));
+    g.setTransform(r.dpr, 0, 0, r.dpr, 0, 0);
+    g.fillStyle = sky;
+    g.fillRect(0, 0, ctx.w, ctx.h);
+
+    // Звёзды: собственный параллакс, гаснут к рассвету.
+    g.globalAlpha = 0.7 * (1 - dayT * 0.75);
+    g.fillStyle = '#ffffff';
+    for (const st of this.stars) {
+      const sx = ((st.x - r.camX * st.z) % 2400 + 2400) % 2400 - 400;
+      const sy = ctx.h / 2 + st.y * 0.35 - r.camY * st.z * 0.25;
+      if (sy < -10 || sy > ctx.h + 10) continue;
+      const size = st.z * 2.4;
+      g.fillRect(sx, sy, size, size);
+    }
+    g.globalAlpha = 1;
 
     r.camera();
 
@@ -299,9 +349,15 @@ export class SkyDrifter implements Scene {
 
     for (const ring of this.rings) {
       if (ring.taken) continue;
+      const pulse = 0.75 + Math.sin(this.distance * 0.01 + ring.y) * 0.25;
       g.strokeStyle = '#ffd166';
-      g.lineWidth = 4;
-      g.globalAlpha = 0.9;
+      g.globalAlpha = 0.25 * pulse;
+      g.lineWidth = 12;
+      g.beginPath();
+      g.ellipse(ring.x, ring.y, 10, ring.r, 0, 0, TAU);
+      g.stroke();
+      g.globalAlpha = 0.95;
+      g.lineWidth = 3;
       g.beginPath();
       g.ellipse(ring.x, ring.y, 10, ring.r, 0, 0, TAU);
       g.stroke();
@@ -325,17 +381,49 @@ export class SkyDrifter implements Scene {
     }
 
     r.drawParticles();
+    r.drawPopups();
+
+    // Скоростные штрихи: чем быстрее, тем гуще — ход читается телом.
+    const over = (this.speed - SkyDrifter.BASE_SPEED) /
+                 (SkyDrifter.BOOST_SPEED - SkyDrifter.BASE_SPEED);
+    if (over > 0.15) {
+      g.strokeStyle = `rgba(190,225,255,${clamp(over * 0.35, 0, 0.35)})`;
+      g.lineWidth = 2;
+      for (let i = 0; i < 16; i++) {
+        const sy = this.py + ((i * 137) % 700) - 350;
+        const sx = this.px + 260 - ((this.px * 1.4 + i * 211) % 900);
+        g.beginPath();
+        g.moveTo(sx, sy);
+        g.lineTo(sx - 40 - over * 70, sy);
+        g.stroke();
+      }
+    }
 
     if (this.alive) {
       const ix = lerp(this.prevX, this.px, alpha);
       const iy = lerp(this.prevY, this.py, alpha);
       g.save();
       g.translate(ix, iy);
-      g.rotate(this.heading * 0.6 + this.vy * 0.0005);
-      g.scale(1, Math.cos(this.roll));     // крен как сжатие силуэта
+      g.rotate(this.heading);
+      g.scale(1, Math.cos(this.roll * 0.8));   // крен как сжатие силуэта
+      // Свечение сопла тем ярче, чем выше ход
+      const glow = clamp(over, 0, 1);
+      if (glow > 0.05) {
+        g.globalCompositeOperation = 'lighter';
+        g.fillStyle = `rgba(90,210,255,${glow * 0.5})`;
+        g.beginPath();
+        g.arc(-14, 0, 10 + glow * 12, 0, TAU);
+        g.fill();
+        g.globalCompositeOperation = 'source-over';
+      }
       g.fillStyle = '#e9f2ff';
       g.beginPath();
       g.moveTo(22, 0); g.lineTo(-14, -11); g.lineTo(-7, 0); g.lineTo(-14, 11);
+      g.closePath();
+      g.fill();
+      g.fillStyle = '#5ad2ff';
+      g.beginPath();
+      g.moveTo(8, 0); g.lineTo(-6, -4); g.lineTo(-6, 4);
       g.closePath();
       g.fill();
       if (this.shield > 0) {
@@ -358,10 +446,10 @@ export class SkyDrifter implements Scene {
     if (this.combo > 1) r.text(`x${this.combo}`, 20, 90, 20, '#ffd166');
 
     // шкала перегрева
-    const bw = 140, bh = 8, bx = ctx.w - bw - 20, by = 30;
+    const bw = 130, bh = 8, bx = ctx.w - bw - 82, by = 26;
     r.roundRect(bx, by, bw, bh, 4, 'rgba(255,255,255,0.15)');
     r.roundRect(bx, by, bw * this.heat, bh, 4, this.overheated ? '#ff4d4d' : '#5ad2ff');
-    r.text(this.overheated ? 'ПЕРЕГРЕВ' : 'ФОРСАЖ', ctx.w - 20, 56, 12,
+    r.text(this.overheated ? 'ПЕРЕГРЕВ' : 'ФОРСАЖ', ctx.w - 82, 50, 12,
       this.overheated ? '#ff8080' : '#7fb6ff', 'right');
 
     r.restore();

@@ -42,6 +42,10 @@ export class TiltRacer implements Scene {
   private best = 0;
   private finished = false;
   private timeLeft = 45;
+  /** Следы шин. Кольцевой буфер: держим последние N отрезков и затираем
+   *  старые, иначе за минуту дрифта массив разрастётся до десятков тысяч. */
+  private skid: { x: number; y: number; a: number; w: number }[] = [];
+  private static readonly MAX_SKID = 260;
   private shell = new Shell('race', () => this.restart());
   private ctxRef: SceneContext | null = null;
 
@@ -71,6 +75,7 @@ export class TiltRacer implements Scene {
     this.vx = 0; this.vy = 0;
     this.heading = Math.atan2(this.track[1].y - p.y, this.track[1].x - p.x);
     this.angVel = 0; this.drift = 0; this.nearest = 0;
+    this.skid = [];
     this.time = 0; this.score = 0; this.combo = 0; this.finished = false;
     this.timeLeft = 45;
     this.best = ctx.save.best[this.name] ?? 0;
@@ -223,6 +228,12 @@ export class TiltRacer implements Scene {
       }
     }
 
+    // следы: кладём, пока машину тащит боком
+    if (this.drift > 0.3 && speed > 200) {
+      this.skid.push({ x: this.x, y: this.y, a: this.heading, w: this.drift });
+      if (this.skid.length > TiltRacer.MAX_SKID) this.skid.shift();
+    }
+
     // очки за дрифт: чем быстрее и боком — тем больше
     if (this.drift > 0.35 && speed > 250) {
       this.score += this.drift * speed * dt * 0.09 * (1 + this.combo * 0.12);
@@ -259,6 +270,7 @@ export class TiltRacer implements Scene {
         this.score += 300 + this.combo * 60;
         ctx.save.coins += 2;
         audio.pickup();
+        r.popup(gate.x, gate.y - 24, `+${300 + this.combo * 60}`, '#7dffb0');
         r.flash('#7dffb0', 0.15);
         ctx.input.vibrate(15);
       }
@@ -312,6 +324,23 @@ export class TiltRacer implements Scene {
     g.stroke();
     g.setLineDash([]);
 
+    // следы шин ложатся на полотно, до конусов и ворот
+    g.lineCap = 'round';
+    for (let i = 0; i < this.skid.length; i++) {
+      const sk = this.skid[i];
+      const fade = (i / this.skid.length) * 0.45;
+      g.strokeStyle = `rgba(20,20,24,${fade * sk.w})`;
+      g.lineWidth = 6;
+      const nx = Math.cos(sk.a + Math.PI / 2) * 9;
+      const ny = Math.sin(sk.a + Math.PI / 2) * 9;
+      g.beginPath();
+      g.moveTo(sk.x + nx, sk.y + ny);
+      g.lineTo(sk.x + nx - Math.cos(sk.a) * 10, sk.y + ny - Math.sin(sk.a) * 10);
+      g.moveTo(sk.x - nx, sk.y - ny);
+      g.lineTo(sk.x - nx - Math.cos(sk.a) * 10, sk.y - ny - Math.sin(sk.a) * 10);
+      g.stroke();
+    }
+
     for (const gate of this.gates) {
       if (gate.passed) continue;
       g.strokeStyle = '#7dffb0';
@@ -328,16 +357,28 @@ export class TiltRacer implements Scene {
     }
 
     r.drawParticles();
+    r.drawPopups();
 
     const ix = lerp(this.prevX, this.x, alpha);
     const iy = lerp(this.prevY, this.y, alpha);
     g.save();
     g.translate(ix, iy);
     g.rotate(this.heading);
+    // колёса
+    g.fillStyle = '#15161c';
+    g.fillRect(-14, -14, 9, 5);
+    g.fillRect(-14, 9, 9, 5);
+    g.fillRect(7, -14, 9, 5);
+    g.fillRect(7, 9, 9, 5);
+    // кузов
     g.fillStyle = this.drift > 0.4 ? '#ffd166' : '#e9f2ff';
-    g.fillRect(-18, -11, 36, 22);
+    r.roundRect(-18, -11, 36, 22, 5, this.drift > 0.4 ? '#ffd166' : '#e9f2ff');
+    // стекло и фары
     g.fillStyle = '#121a2e';
-    g.fillRect(-2, -9, 12, 18);
+    r.roundRect(-3, -8, 11, 16, 3, '#121a2e');
+    g.fillStyle = 'rgba(255,240,190,0.9)';
+    g.fillRect(16, -8, 3, 5);
+    g.fillRect(16, 3, 3, 5);
     g.restore();
 
     r.restore();
@@ -346,8 +387,8 @@ export class TiltRacer implements Scene {
     r.text(`${Math.floor(this.score)}`, 20, 34, 30, '#ffffff');
     r.text(`рекорд ${this.best}`, 20, 62, 13, '#7f93b8');
     const sp = Math.hypot(this.vx, this.vy) * 0.19;
-    r.text(`${Math.round(sp)} км/ч`, ctx.w - 20, 34, 22, '#8fd6ff', 'right');
-    r.text(`${this.timeLeft.toFixed(1)} с`, ctx.w - 20, 62, 18,
+    r.text(`${Math.round(sp)} км/ч`, ctx.w - 82, 30, 22, '#8fd6ff', 'right');
+    r.text(`${this.timeLeft.toFixed(1)} с`, ctx.w - 82, 58, 18,
       this.timeLeft < 8 ? '#ff6b6b' : '#cfe0ff', 'right');
     if (this.combo > 1) r.text(`ворота x${this.combo}`, ctx.w / 2, 34, 18, '#7dffb0', 'center');
     if (this.drift > 0.4) r.text('ДРИФТ', ctx.w / 2, ctx.h - 40, 24, '#ffd166', 'center');

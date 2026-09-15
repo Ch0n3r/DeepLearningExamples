@@ -1,5 +1,11 @@
 import { clamp, damp, TAU } from './math';
 
+interface Popup {
+  x: number; y: number; vy: number;
+  life: number; maxLife: number;
+  text: string; color: string; size: number;
+}
+
 interface Particle {
   x: number; y: number; vx: number; vy: number;
   life: number; maxLife: number; size: number;
@@ -25,6 +31,10 @@ export class Renderer {
 
   private pool: Particle[] = [];
   private live = 0;
+
+  // Всплывающие очки: отдельный небольшой пул, рисуется поверх мира.
+  private popups: Popup[] = [];
+  private static readonly MAX_POPUPS = 32;
   private static readonly MAX_PARTICLES = 900;
 
   constructor(private canvas: HTMLCanvasElement) {
@@ -62,6 +72,14 @@ export class Renderer {
 
     this.flashAlpha = damp(this.flashAlpha, 0, 0.06, dt);
     this.updateParticles(dt);
+
+    for (let i = this.popups.length - 1; i >= 0; i--) {
+      const p = this.popups[i];
+      p.life -= dt;
+      p.y += p.vy * dt;
+      p.vy *= Math.exp(-2.2 * dt);
+      if (p.life <= 0) this.popups.splice(i, 1);
+    }
   }
 
   endFrame() {
@@ -148,6 +166,27 @@ export class Renderer {
       p.x += p.vx * dt;
       p.y += p.vy * dt;
     }
+  }
+
+  /** Всплывающая надпись — «+250» над сбитой целью. */
+  popup(x: number, y: number, text: string, color = '#ffd166', size = 15) {
+    if (this.popups.length >= Renderer.MAX_POPUPS) this.popups.shift();
+    this.popups.push({ x, y, vy: -60, life: 0.9, maxLife: 0.9, text, color, size });
+  }
+
+  /** Рисуется внутри camera(), после мира. */
+  drawPopups() {
+    const g = this.ctx;
+    for (const p of this.popups) {
+      const t = p.life / p.maxLife;
+      g.globalAlpha = Math.min(1, t * 1.8);
+      g.fillStyle = p.color;
+      g.font = `700 ${p.size}px "Inter", system-ui, sans-serif`;
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText(p.text, p.x, p.y);
+    }
+    g.globalAlpha = 1;
   }
 
   /** Рисуется внутри camera(). */

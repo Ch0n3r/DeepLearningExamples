@@ -23,8 +23,9 @@ export class Shell {
   private bound = false;
   private pausePulse = 0;
 
-  /** Куда нажимать пальцем: кнопка «назад» в углу. */
-  private backBox = { x: 0, y: 0, w: 44, h: 44 };
+  /** Кнопка паузы. Держим её в поле, чтобы попадание считалось по тем же
+   *  координатам, по которым она нарисована. */
+  private pauseBox = { x: 0, y: 0, w: 52, h: 52 };
 
   constructor(
     private sceneName: string,
@@ -46,12 +47,14 @@ export class Shell {
       ctx.input.onTap((x, y) => {
         if (this.isActive(ctx)) this.handleTap(ctx, x, y);
       });
+      // Долгое удержание паузу больше не ставит: кнопка стилуса — игровое
+      // действие, и «перезарядка» или «форсаж» слишком легко превращались
+      // в случайную паузу. Для паузы есть отдельная кнопка на экране.
       ctx.input.onEvent((kind) => {
         if (!this.isActive(ctx)) return;
-        if (kind === 'button_long' && this.phase === 'playing') this.pause(ctx);
-        // На паузе и на экране итога кнопка стилуса — это «продолжить»
+        // На паузе и на экране итога кнопка стилуса — «продолжить»
         // или «ещё раз»: без неё пришлось бы тянуться пальцем к экрану.
-        else if (kind === 'button_tap' && this.phase !== 'playing') this.handleButton(ctx);
+        if (kind === 'button_tap' && this.phase !== 'playing') this.handleButton(ctx);
       });
     }
   }
@@ -115,8 +118,11 @@ export class Shell {
     const py = y * ctx.h;
 
     if (this.phase === 'playing') {
-      const b = this.backBox;
-      if (px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h) this.pause(ctx);
+      const b = this.pauseBox;
+      // Зона попадания щедрее рисунка: на ходу целиться в 52 px неудобно.
+      const pad = 14;
+      if (px >= b.x - pad && px <= b.x + b.w + pad &&
+          py >= b.y - pad && py <= b.y + b.h + pad) this.pause(ctx);
       return;
     }
 
@@ -139,16 +145,14 @@ export class Shell {
     r.ui();
 
     if (this.phase === 'playing') {
-      const b = this.backBox;
-      b.x = ctx.w - 56; b.y = ctx.h - 56;
-      r.roundRect(b.x, b.y, b.w, b.h, 12, 'rgba(10,14,28,0.55)');
-      g.strokeStyle = 'rgba(200,215,245,0.75)';
-      g.lineWidth = 2;
-      g.beginPath();
-      g.moveTo(b.x + 26, b.y + 14);
-      g.lineTo(b.x + 16, b.y + 22);
-      g.lineTo(b.x + 26, b.y + 30);
-      g.stroke();
+      const b = this.pauseBox;
+      b.x = ctx.w - b.w - 14;
+      b.y = 14;
+      r.roundRect(b.x, b.y, b.w, b.h, 14, 'rgba(10,14,28,0.5)');
+      r.roundRect(b.x, b.y, b.w, b.h, 14, 'rgba(160,185,230,0.35)', true);
+      g.fillStyle = 'rgba(226,236,255,0.92)';
+      g.fillRect(b.x + 18, b.y + 15, 5, 22);
+      g.fillRect(b.x + 29, b.y + 15, 5, 22);
       r.restore();
       return;
     }
@@ -194,7 +198,7 @@ export class Shell {
     this.button(ctx, ctx.w * 0.58, by, ctx.w * 0.34, bh, 'В МЕНЮ', '#8fa5d8');
 
     r.text('кнопка стилуса — продолжить · системная «назад» — в меню',
-      ctx.w / 2, ctx.h - 24, 11, 'rgba(180,195,225,0.5)', 'center');
+      ctx.w / 2, ctx.h - 20, 11, 'rgba(180,195,225,0.5)', 'center');
     r.restore();
   }
 

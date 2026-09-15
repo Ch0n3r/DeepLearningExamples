@@ -321,7 +321,9 @@ export class InkRunes implements Scene {
 
       if (f.hp <= 0) {
         f.alive = false;
-        this.score += f.type === 'armor' ? 260 : f.type === 'swarm' ? 60 : 140;
+        const gain = f.type === 'armor' ? 260 : f.type === 'swarm' ? 60 : 140;
+        this.score += gain;
+        r.popup(f.x, f.y - 18, `+${gain}`, '#ffb86b');
         ctx.save.coins += 1;
         r.burst(f.x, f.y, 18, 260, '#ffb86b', 0.6);
         audio.hit();
@@ -376,11 +378,22 @@ export class InkRunes implements Scene {
     r.camera();
     g.translate(-ctx.w / 2, -ctx.h / 2);
 
-    // ядро, которое защищаем
+    // ядро, которое защищаем: пульс тем тревожнее, чем меньше здоровья
     const coreX = ctx.w / 2, coreY = ctx.h - 60;
-    g.strokeStyle = this.shield > 0 ? 'rgba(125,214,255,0.8)' : 'rgba(255,209,102,0.5)';
-    g.lineWidth = 3;
-    g.beginPath(); g.arc(coreX, coreY, 40, 0, TAU); g.stroke();
+    const urgency = 1 - this.hp / 100;
+    const pulse = 1 + Math.sin(this.score * 0.05 + this.wave) * (0.05 + urgency * 0.12);
+
+    g.globalCompositeOperation = 'lighter';
+    const coreGlow = g.createRadialGradient(coreX, coreY, 0, coreX, coreY, 90 * pulse);
+    coreGlow.addColorStop(0, `rgba(255,209,102,${0.35 + urgency * 0.25})`);
+    coreGlow.addColorStop(1, 'rgba(255,209,102,0)');
+    g.fillStyle = coreGlow;
+    g.fillRect(coreX - 120, coreY - 120, 240, 240);
+    g.globalCompositeOperation = 'source-over';
+
+    g.strokeStyle = this.shield > 0 ? 'rgba(125,214,255,0.85)' : 'rgba(255,209,102,0.5)';
+    g.lineWidth = this.shield > 0 ? 4 : 3;
+    g.beginPath(); g.arc(coreX, coreY, 40 * pulse, 0, TAU); g.stroke();
     r.circle(coreX, coreY, 22, '#ffd166');
 
     if (this.vortexTimer > 0) {
@@ -395,7 +408,39 @@ export class InkRunes implements Scene {
                   : f.type === 'swarm' ? '#9a7ad6'
                   : f.type === 'flyer' ? '#6ac0a0'
                   : '#d0d6e8';
-      r.circle(f.x, f.y, f.r, color);
+      g.save();
+      g.translate(f.x, f.y);
+      g.fillStyle = color;
+      if (f.type === 'armor') {
+        // бронированный — шестиугольник, видно издалека
+        g.beginPath();
+        for (let k = 0; k < 6; k++) {
+          const a = (k / 6) * TAU;
+          g.lineTo(Math.cos(a) * f.r, Math.sin(a) * f.r);
+        }
+        g.closePath();
+        g.fill();
+        g.strokeStyle = 'rgba(255,255,255,0.35)';
+        g.lineWidth = 2;
+        g.stroke();
+      } else if (f.type === 'flyer') {
+        g.beginPath();
+        g.moveTo(0, -f.r);
+        g.lineTo(f.r, f.r * 0.7);
+        g.lineTo(-f.r, f.r * 0.7);
+        g.closePath();
+        g.fill();
+      } else {
+        g.beginPath();
+        g.arc(0, 0, f.r, 0, TAU);
+        g.fill();
+      }
+      if (f.frozen > 0) {
+        g.strokeStyle = 'rgba(200,240,255,0.9)';
+        g.lineWidth = 2;
+        g.beginPath(); g.arc(0, 0, f.r + 4, 0, TAU); g.stroke();
+      }
+      g.restore();
       if (f.hp < f.maxHp) {
         const w = f.r * 2;
         r.roundRect(f.x - f.r, f.y - f.r - 9, w, 3, 1.5, 'rgba(0,0,0,0.5)');
@@ -404,17 +449,23 @@ export class InkRunes implements Scene {
     }
 
     r.drawParticles();
+    r.drawPopups();
 
     // чернильный след
     if (this.stroke.length > 1) {
-      g.strokeStyle = 'rgba(160,220,255,0.95)';
-      g.lineWidth = 4;
       g.lineJoin = 'round';
       g.lineCap = 'round';
-      g.beginPath();
-      g.moveTo(this.stroke[0].x, this.stroke[0].y);
-      for (let i = 1; i < this.stroke.length; i++) g.lineTo(this.stroke[i].x, this.stroke[i].y);
-      g.stroke();
+      // два прохода: широкий светящийся и тонкий яркий поверх
+      g.globalCompositeOperation = 'lighter';
+      for (const [w, a] of [[14, 0.18], [4, 0.95]] as const) {
+        g.strokeStyle = `rgba(140,210,255,${a})`;
+        g.lineWidth = w;
+        g.beginPath();
+        g.moveTo(this.stroke[0].x, this.stroke[0].y);
+        for (let i = 1; i < this.stroke.length; i++) g.lineTo(this.stroke[i].x, this.stroke[i].y);
+        g.stroke();
+      }
+      g.globalCompositeOperation = 'source-over';
     }
 
     // курсор пера
@@ -432,8 +483,8 @@ export class InkRunes implements Scene {
     if (this.shield > 0) {
       r.roundRect(20, 52, 160 * (this.shield / 100), 6, 3, '#7dd6ff');
     }
-    r.text(`${Math.floor(this.score)}`, ctx.w - 20, 34, 26, '#ffffff', 'right');
-    r.text(`волна ${this.wave}`, ctx.w - 20, 60, 13, '#a9bbe0', 'right');
+    r.text(`${Math.floor(this.score)}`, ctx.w - 82, 30, 26, '#ffffff', 'right');
+    r.text(`волна ${this.wave}`, ctx.w - 82, 56, 13, '#a9bbe0', 'right');
 
     // подсказка по рунам + кулдауны
     const runes: Rune[] = ['fire', 'ice', 'shield', 'chain', 'vortex'];

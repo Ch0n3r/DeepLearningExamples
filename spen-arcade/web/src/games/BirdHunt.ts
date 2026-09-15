@@ -69,6 +69,8 @@ export class BirdHunt implements Scene {
   private wantShot = false;
   private wantReload = false;
   private bound = false;
+  private muzzle = 0;
+  private clouds: { x: number; y: number; s: number; v: number }[] = [];
   private shell = new Shell('hunt', () => this.restart());
   private ctxRef: SceneContext | null = null;
 
@@ -82,7 +84,14 @@ export class BirdHunt implements Scene {
     this.rng = makeRng((Date.now() & 0xffff) | 1);
     this.birds = []; this.pellets = [];
     this.aimX = ctx.w / 2; this.aimY = ctx.h / 2;
-    this.recoil = 0; this.recoilKickY = 0;
+    this.recoil = 0; this.recoilKickY = 0; this.muzzle = 0;
+    this.clouds = [];
+    for (let i = 0; i < 7; i++) {
+      this.clouds.push({
+        x: this.rng() * 1.2 - 0.1, y: 0.08 + this.rng() * 0.35,
+        s: 0.5 + this.rng(), v: 0.004 + this.rng() * 0.01,
+      });
+    }
     this.ammo = this.maxAmmo; this.reloading = 0;
     this.score = 0; this.streak = 0; this.misses = 0;
     this.wave = 1; this.waveTimer = 0; this.timeLeft = 60;
@@ -161,6 +170,11 @@ export class BirdHunt implements Scene {
     this.aimY = clamp(this.aimY, 20, ctx.h - 20);
 
     this.recoil = damp(this.recoil, 0, 0.08, dt);
+    this.muzzle = damp(this.muzzle, 0, 0.04, dt);
+    for (const c of this.clouds) {
+      c.x += c.v * dt;
+      if (c.x > 1.25) c.x = -0.25;
+    }
 
     // --- перезарядка / выстрел -------------------------------------------------
     if (this.reloading > 0) {
@@ -245,6 +259,7 @@ export class BirdHunt implements Scene {
     }
     // Отдача подбрасывает прицел — стрелять очередями невыгодно.
     this.recoilKickY = -900;
+    this.muzzle = 1;
     this.aimX += (this.rng() - 0.5) * 6;
     this.recoil = 1;
     ctx.r.addShake(5);
@@ -266,6 +281,10 @@ export class BirdHunt implements Scene {
 
     b.alive = false;
     this.streak++;
+    for (let i = 0; i < 7; i++) {
+      ctx.r.spawn(b.x, b.y, (this.rng() - 0.5) * 120, this.rng() * 60 + 20,
+        1.4, 3, '#e8dcc8', { drag: 0.8, gravity: 140, additive: false });
+    }
     const bonus = 1 + Math.min(this.streak, 10) * 0.15;
     this.score += Math.round((b.kind === 1 ? 180 : b.kind === 2 ? 260 : 100) * bonus);
     ctx.save.coins += 1;
@@ -349,6 +368,25 @@ export class BirdHunt implements Scene {
     g.fillStyle = sky;
     g.fillRect(0, 0, ctx.w, ctx.h);
 
+    // солнце
+    g.globalCompositeOperation = 'lighter';
+    const sunG = g.createRadialGradient(ctx.w * 0.78, ctx.h * 0.2, 0, ctx.w * 0.78, ctx.h * 0.2, 160);
+    sunG.addColorStop(0, 'rgba(255,230,170,0.55)');
+    sunG.addColorStop(1, 'rgba(255,230,170,0)');
+    g.fillStyle = sunG;
+    g.fillRect(0, 0, ctx.w, ctx.h);
+    g.globalCompositeOperation = 'source-over';
+
+    // облака
+    g.fillStyle = 'rgba(255,255,255,0.16)';
+    for (const c of this.clouds) {
+      const cx = c.x * ctx.w, cy = c.y * ctx.h, s = 46 * c.s;
+      g.beginPath();
+      g.ellipse(cx, cy, s * 1.7, s * 0.6, 0, 0, TAU);
+      g.ellipse(cx + s * 0.7, cy - s * 0.25, s, s * 0.5, 0, 0, TAU);
+      g.fill();
+    }
+
     r.camera();
     g.translate(-ctx.w / 2, -ctx.h / 2);
 
@@ -365,6 +403,14 @@ export class BirdHunt implements Scene {
 
     for (const b of this.birds) {
       if (!b.alive) continue;
+      // тень на кустах — помогает читать глубину
+      g.globalAlpha = 0.18;
+      g.fillStyle = '#000';
+      g.beginPath();
+      g.ellipse(b.x, ctx.h - 54, b.r * 0.9, b.r * 0.3, 0, 0, TAU);
+      g.fill();
+      g.globalAlpha = 1;
+
       const wing = Math.sin(b.flap) * 0.9;
       g.save();
       g.translate(b.x, b.y);
@@ -392,6 +438,18 @@ export class BirdHunt implements Scene {
     }
 
     r.drawParticles();
+    r.drawPopups();
+
+    // вспышка выстрела снизу, откуда уходит дробь
+    if (this.muzzle > 0.02) {
+      g.globalCompositeOperation = 'lighter';
+      g.fillStyle = `rgba(255,220,150,${this.muzzle * 0.65})`;
+      g.beginPath();
+      g.arc(ctx.w / 2, ctx.h + 10, 60 + this.muzzle * 90, 0, TAU);
+      g.fill();
+      g.globalCompositeOperation = 'source-over';
+    }
+
     r.restore();
 
     // --- прицел ---------------------------------------------------------------
@@ -423,9 +481,9 @@ export class BirdHunt implements Scene {
     r.text(`${Math.floor(this.score)}`, 20, 34, 30, '#ffffff');
     r.text(`волна ${this.wave}`, 20, 62, 13, '#dfe9ff');
     if (this.streak > 1) r.text(`серия x${this.streak}`, 20, 84, 16, '#ffd166');
-    r.text(`${this.timeLeft.toFixed(1)} с`, ctx.w - 20, 34, 22,
+    r.text(`${this.timeLeft.toFixed(1)} с`, ctx.w - 82, 30, 22,
       this.timeLeft < 10 ? '#ff6b6b' : '#ffffff', 'right');
-    r.text('удержать — перезарядка', ctx.w - 20, 60, 12, 'rgba(255,255,255,0.6)', 'right');
+    r.text('удержать — перезарядка', ctx.w - 82, 56, 12, 'rgba(255,255,255,0.6)', 'right');
 
     r.restore();
     this.shell.render(ctx);
