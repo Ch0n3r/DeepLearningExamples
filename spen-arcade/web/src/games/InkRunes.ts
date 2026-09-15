@@ -48,7 +48,8 @@ export class InkRunes implements Scene {
   private lastRune: { name: string; score: number; t: number } | null = null;
   private cooldowns: Record<Rune, number> = { fire: 0, ice: 0, shield: 0, chain: 0, vortex: 0 };
 
-  private static readonly CURSOR_SPEED = 520;   // px/с при полном наклоне
+  /** Во сколько ширин экрана превращается единичная дельта пера. */
+  private static readonly CURSOR_GAIN = 1.0;
   private static readonly SAMPLE_HZ = 60;
   private static readonly MIN_SCORE = 0.74;     // ниже — «руна не распознана»
   private static readonly COSTS: Record<Rune, number> = {
@@ -85,7 +86,11 @@ export class InkRunes implements Scene {
     this.cooldowns = { fire: 0, ice: 0, shield: 0, chain: 0, vortex: 0 };
 
     if (!this.bound) { ctx.input.onEvent(this.onEvent); this.bound = true; }
-    ctx.r.camX = 0; ctx.r.camY = 0; ctx.r.camZoom = 1; ctx.r.camRot = 0;
+    // Эти игры рисуются прямо в экранных координатах, поэтому камеру ставим
+    // в центр вида — тогда camera() даёт тождественное преобразование и
+    // при этом продолжает работать тряска.
+    ctx.r.camX = ctx.w / 2; ctx.r.camY = ctx.h / 2;
+    ctx.r.camZoom = 1; ctx.r.camRot = 0;
     this.shell.begin(ctx);
   }
 
@@ -222,13 +227,20 @@ export class InkRunes implements Scene {
     }
 
     // --- курсор ---------------------------------------------------------------
-    const ty = pen.tiltY;
-    // Нелинейная скорость: sqrt даёт точность у нуля и размах на краях.
-    const m = pen.magnitude;
-    const speed = InkRunes.CURSOR_SPEED * Math.sqrt(m);
-    if (m > 1e-3) {
-      this.cx += (pen.tiltX / m) * speed * dt;
-      this.cy += (ty / m) * speed * dt;
+    //
+    // Прямое перемещение: на сколько повернул перо — на столько уехал курсор.
+    // Раньше наклон задавал СКОРОСТЬ, и курсор продолжал ползти после
+    // остановки руки; нарисовать руну таким управлением невозможно.
+    const { dx, dy } = ctx.input.consumeDelta();
+    const gain = InkRunes.CURSOR_GAIN * ctx.input.sensitivity;
+
+    if (pen.hover && pen.hoverDistance < 0.5 && pen.source === 'native') {
+      // Перо у экрана — ведём курсор прямо под кончик.
+      this.cx = pen.hoverX * ctx.w;
+      this.cy = pen.hoverY * ctx.h;
+    } else {
+      this.cx += dx * ctx.w * gain;
+      this.cy += dy * ctx.h * gain;
     }
     this.cx = clamp(this.cx, 12, ctx.w - 12);
     this.cy = clamp(this.cy, 12, ctx.h - 12);
@@ -376,7 +388,6 @@ export class InkRunes implements Scene {
     r.clear('#080612');
 
     r.camera();
-    g.translate(-ctx.w / 2, -ctx.h / 2);
 
     // ядро, которое защищаем: пульс тем тревожнее, чем меньше здоровья
     const coreX = ctx.w / 2, coreY = ctx.h - 60;

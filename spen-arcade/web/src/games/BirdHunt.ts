@@ -99,7 +99,11 @@ export class BirdHunt implements Scene {
     this.wantShot = false; this.wantReload = false;
 
     if (!this.bound) { ctx.input.onEvent(this.onEvent); this.bound = true; }
-    ctx.r.camX = 0; ctx.r.camY = 0; ctx.r.camZoom = 1; ctx.r.camRot = 0;
+    // Эти игры рисуются прямо в экранных координатах, поэтому камеру ставим
+    // в центр вида — тогда camera() даёт тождественное преобразование и
+    // при этом продолжает работать тряска.
+    ctx.r.camX = ctx.w / 2; ctx.r.camY = ctx.h / 2;
+    ctx.r.camZoom = 1; ctx.r.camRot = 0;
     this.spawnWave(ctx);
     this.shell.begin(ctx);
   }
@@ -388,7 +392,6 @@ export class BirdHunt implements Scene {
     }
 
     r.camera();
-    g.translate(-ctx.w / 2, -ctx.h / 2);
 
     // кусты на переднем плане
     g.fillStyle = '#12301c';
