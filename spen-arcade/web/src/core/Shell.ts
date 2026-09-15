@@ -61,6 +61,11 @@ export class Shell {
   /** true — можно считать физику. */
   update(ctx: SceneContext, dt: number): boolean {
     this.pausePulse += dt;
+
+    // Пока раунд не идёт, перемещение пера выбрасываем. Иначе всё, что
+    // игрок намахал за отсчёт или паузу, применилось бы одним рывком.
+    if (this.phase !== 'playing') ctx.input.consumeDelta();
+
     if (this.phase === 'countdown') {
       this.countdown -= dt;
       if (this.countdown <= 0) {

@@ -91,6 +91,12 @@ class SPenBridge(
 
     // Диагностика: без неё невозможно отличить «события не приходят»
     // от «приходят, но мы их неправильно масштабируем».
+    // Сырые дельты, накопленные с прошлого опроса. Отдельный канал от наклона:
+    // наклон самоцентрируется утечкой (это нужно самолёту), а прицелу нужно
+    // относительное указание без возврата к центру — как у мыши.
+    private var pendingDx = 0f
+    private var pendingDy = 0f
+
     @Volatile private var airEvents = 0L
     @Volatile private var lastDx = 0f
     @Volatile private var lastDy = 0f
@@ -205,6 +211,11 @@ class SPenBridge(
         // (той, что при портретной ориентации), а игра идёт в ландшафте.
         // Без разворота наклон «влево-вправо» поднимал бы нос самолёта.
         val (dx, dy) = rotateToScreen(deltaX, deltaY)
+
+        synchronized(this) {
+            pendingDx += dx
+            pendingDy += dy
+        }
 
         airX = (airX + dx * AIR_GAIN).coerceIn(-1.4f, 1.4f)
         airY = (airY + dy * AIR_GAIN).coerceIn(-1.4f, 1.4f)
@@ -348,9 +359,21 @@ class SPenBridge(
         tiltY = airY.coerceIn(-1f, 1f)
     }
 
+    /** Забрать и обнулить накопленные дельты. Ровно один раз за кадр. */
+    @Synchronized
+    private fun takeDeltas(): Pair<Float, Float> {
+        val d = Pair(pendingDx, pendingDy)
+        pendingDx = 0f
+        pendingDy = 0f
+        return d
+    }
+
     @JavascriptInterface
     fun pollState(): String = JSONObject().apply {
         decay()
+        val (dx, dy) = takeDeltas()
+        put("dx", dx)
+        put("dy", dy)
         put("ok", true)
         put("tiltX", tiltX)
         put("tiltY", tiltY)

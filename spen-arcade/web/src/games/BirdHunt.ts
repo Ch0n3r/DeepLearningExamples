@@ -1,6 +1,6 @@
 import { Scene, SceneContext } from '../core/Engine';
 import { Shell } from '../core/Shell';
-import { damp, lerp, makeRng, segmentHitsCircle, SpatialHash, TAU } from '../core/math';
+import { clamp, damp, lerp, makeRng, segmentHitsCircle, SpatialHash, TAU } from '../core/math';
 
 interface Bird {
   x: number; y: number; r: number;
@@ -32,8 +32,8 @@ export class BirdHunt implements Scene {
   private hash = new SpatialHash<{ x: number; y: number; r: number }>(72);
 
   private aimX = 0; private aimY = 0;
-  private aimVX = 0; private aimVY = 0;
   private recoil = 0;
+  private recoilKickY = 0;
 
   private ammo = 6;
   private maxAmmo = 6;
@@ -47,8 +47,14 @@ export class BirdHunt implements Scene {
   private over = false;
   private overTimer = 0;
 
-  private static readonly AIM_ACCEL = 2600;   // px/с² при полном наклоне
-  private static readonly AIM_DRAG = 5.5;
+  /**
+   * Во сколько ширин экрана превращается единичная дельта пера.
+   *
+   * Прицел ведут как ствол пушки: перо — относительный указатель, а не
+   * рычаг скорости. Инерции и возврата к центру здесь быть не должно,
+   * иначе невозможно навестись на точку и удержать её.
+   */
+  private static readonly AIM_GAIN = 1.0;
   private static readonly PELLET_SPEED = 1500;
   private static readonly PELLETS = 7;
   private static readonly SPREAD = 0.075;     // рад
@@ -76,7 +82,7 @@ export class BirdHunt implements Scene {
     this.rng = makeRng((Date.now() & 0xffff) | 1);
     this.birds = []; this.pellets = [];
     this.aimX = ctx.w / 2; this.aimY = ctx.h / 2;
-    this.aimVX = 0; this.aimVY = 0; this.recoil = 0;
+    this.recoil = 0; this.recoilKickY = 0;
     this.ammo = this.maxAmmo; this.reloading = 0;
     this.score = 0; this.streak = 0; this.misses = 0;
     this.wave = 1; this.waveTimer = 0; this.timeLeft = 60;
@@ -133,25 +139,26 @@ export class BirdHunt implements Scene {
     if (this.timeLeft <= 0) { this.over = true; audio.fail(); return; }
 
     // --- прицел ---------------------------------------------------------------
+    const { dx, dy } = ctx.input.consumeDelta();
+
     if (pen.hover && pen.hoverDistance < 0.45 && pen.source === 'native') {
-      // Снайперский режим: перо близко к экрану — абсолютное наведение.
+      // Перо у экрана — наводимся абсолютно, прямо под кончик.
       this.aimX = damp(this.aimX, pen.hoverX * ctx.w, 0.05, dt);
       this.aimY = damp(this.aimY, pen.hoverY * ctx.h, 0.05, dt);
-      this.aimVX = 0; this.aimVY = 0;
     } else {
-      const ty = pen.tiltY;
-      this.aimVX += pen.tiltX * BirdHunt.AIM_ACCEL * dt;
-      this.aimVY += ty * BirdHunt.AIM_ACCEL * dt;
-      const d = Math.exp(-BirdHunt.AIM_DRAG * dt);
-      this.aimVX *= d; this.aimVY *= d;
-      this.aimX += this.aimVX * dt;
-      this.aimY += this.aimVY * dt;
+      const gain = BirdHunt.AIM_GAIN * ctx.input.sensitivity;
+      this.aimX += dx * ctx.w * gain;
+      this.aimY += dy * ctx.h * gain;
     }
-    // Мягкие стенки: у края прицел тормозится, а не «прилипает».
-    if (this.aimX < 20) { this.aimX = 20; this.aimVX *= -0.25; }
-    if (this.aimX > ctx.w - 20) { this.aimX = ctx.w - 20; this.aimVX *= -0.25; }
-    if (this.aimY < 20) { this.aimY = 20; this.aimVY *= -0.25; }
-    if (this.aimY > ctx.h - 20) { this.aimY = ctx.h - 20; this.aimVY *= -0.25; }
+
+    // Отдача — короткий толчок вверх, который сам затухает.
+    this.aimY += this.recoilKickY * dt;
+    this.recoilKickY = damp(this.recoilKickY, 0, 0.05, dt);
+
+    // Жёсткие границы: прицел просто упирается в край, без отскока —
+    // ствол тоже не отпрыгивает от упора.
+    this.aimX = clamp(this.aimX, 20, ctx.w - 20);
+    this.aimY = clamp(this.aimY, 20, ctx.h - 20);
 
     this.recoil = damp(this.recoil, 0, 0.08, dt);
 
@@ -237,8 +244,8 @@ export class BirdHunt implements Scene {
       });
     }
     // Отдача подбрасывает прицел — стрелять очередями невыгодно.
-    this.aimVY -= 260;
-    this.aimVX += (this.rng() - 0.5) * 160;
+    this.recoilKickY = -900;
+    this.aimX += (this.rng() - 0.5) * 6;
     this.recoil = 1;
     ctx.r.addShake(5);
     ctx.audio.shot();
@@ -389,7 +396,7 @@ export class BirdHunt implements Scene {
 
     // --- прицел ---------------------------------------------------------------
     r.ui();
-    const spread = 18 + this.recoil * 26 + Math.hypot(this.aimVX, this.aimVY) * 0.035;
+    const spread = 18 + this.recoil * 26;
     g.strokeStyle = this.reloading > 0 ? 'rgba(255,120,120,0.9)' : 'rgba(255,255,255,0.92)';
     g.lineWidth = 2;
     for (let i = 0; i < 4; i++) {

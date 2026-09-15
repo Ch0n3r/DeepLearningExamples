@@ -172,6 +172,30 @@ export class PenInput {
   private rawX = 0;
   private rawY = 0;
 
+  /**
+   * Относительное перемещение с прошлого кадра, в долях экрана
+   * (1.0 — проход насквозь). Отдельный канал от наклона: наклон
+   * самоцентрируется, а указателю это противопоказано.
+   */
+  private pendingDX = 0;
+  private pendingDY = 0;
+  private prevHoverX = 0.5;
+  private prevHoverY = 0.5;
+
+  /**
+   * Забрать накопленное перемещение и обнулить счётчик.
+   *
+   * Сцена обязана звать это ровно один раз за кадр. Шаг симуляции
+   * фиксированный и за кадр может прокрутиться несколько раз — если
+   * применять дельту на каждом шаге, прицел уедет кратно числу шагов.
+   */
+  consumeDelta(): { dx: number; dy: number } {
+    const d = { dx: this.pendingDX, dy: this.pendingDY };
+    this.pendingDX = 0;
+    this.pendingDY = 0;
+    return d;
+  }
+
   /** Дёргается один раз за кадр из GameLoop до update() сцены. */
   sample(dt: number) {
     const s = this.state;
@@ -182,6 +206,8 @@ export class PenInput {
       try {
         const j = JSON.parse(native.pollState());
         rx = j.tiltX; ry = j.tiltY; btn = !!j.button;
+        this.pendingDX += j.dx ?? 0;
+        this.pendingDY += j.dy ?? 0;
         s.hover = !!j.hover;
         s.hoverX = j.hx; s.hoverY = j.hy;
         s.hoverDistance = j.hdist; s.pressure = j.pressure;
@@ -204,7 +230,12 @@ export class PenInput {
         s.source = 'mouse';
       }
       btn = this.pointerButton || this.keySpace;
+      // Для мыши и стилуса на экране перемещение курсора и есть дельта.
+      this.pendingDX += s.hoverX - this.prevHoverX;
+      this.pendingDY += s.hoverY - this.prevHoverY;
     }
+    this.prevHoverX = s.hoverX;
+    this.prevHoverY = s.hoverY;
 
     this.rawX = rx;
     this.rawY = ry;
