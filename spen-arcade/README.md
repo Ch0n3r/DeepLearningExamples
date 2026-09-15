@@ -65,7 +65,8 @@ AI Studio генерирует веб-приложение. S Pen SDK — нат
   дуги, поворот по индикативному углу, поиск лучшего угла золотым сечением.
 - `web/src/core/math.ts` — `SpatialHash` (broad-phase O(n) вместо O(n²)) и
   `segmentHitsCircle` (дробь за кадр пролетает 25 px и иначе протыкает птицу).
-- `android/.../SPenBridge.kt` — слияние двух разнородных каналов ввода.
+- `android/.../SPenBridge.kt` — слияние двух разнородных каналов ввода:
+  относительных дельт из `AirMotionEvent` и абсолютного угла из hover.
 
 ## Запуск
 
@@ -75,8 +76,8 @@ cd web && npm install && npm run dev
 ```
 Мышь двигает наклон, пробел — кнопка стилуса.
 
-APK: см. `android/SETUP.md` — сборка через GitHub Actions одной кнопкой,
-Samsung SDK скачивать не обязательно.
+APK: см. `android/SETUP.md` — сборка через GitHub Actions одной кнопкой.
+Samsung S Pen SDK уже лежит в `android/app/libs/`, скачивать ничего не нужно.
 
 ## Промпт для Gemini в AI Studio
 

@@ -38,12 +38,10 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
 
-    // Samsung Pen Remote SDK — ОПЦИОНАЛЬНО.
-    // Если положить spen-remote-*.aar в app/libs/, включится управление
-    // наклоном в воздухе (Air Actions). Без него APK всё равно собирается,
-    // а игра работает на hover-наклоне: SPenBridge обращается к SDK
-    // через рефлексию и корректно переживает его отсутствие.
-    implementation(fileTree("libs") { include("*.aar") })
+    // Samsung Pen Remote SDK v1.0.1 — лежит в app/libs/ и коммитится вместе
+    // с проектом: Samsung не публикует его в Maven, только ZIP-архивом с сайта.
+    // Импортируется напрямую, чтобы компилятор ловил расхождения в сигнатурах.
+    implementation(fileTree("libs") { include("*.jar", "*.aar") })
 }
 
 // Веб-часть живёт отдельным npm-проектом. Копируем её сборку в assets перед

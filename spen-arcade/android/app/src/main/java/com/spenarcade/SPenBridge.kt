@@ -1,45 +1,45 @@
 package com.spenarcade
 
-import android.content.Context
-import android.os.Handler
-import android.os.Looper
+import android.app.Activity
 import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import com.samsung.android.sdk.penremote.AirMotionEvent
+import com.samsung.android.sdk.penremote.ButtonEvent
+import com.samsung.android.sdk.penremote.SpenEvent
+import com.samsung.android.sdk.penremote.SpenEventListener
+import com.samsung.android.sdk.penremote.SpenRemote
+import com.samsung.android.sdk.penremote.SpenUnit
+import com.samsung.android.sdk.penremote.SpenUnitManager
 import org.json.JSONObject
-import java.lang.reflect.InvocationHandler
-import java.lang.reflect.Method
-import java.lang.reflect.Proxy
 import kotlin.math.abs
 
 /**
  * Мост между Samsung S Pen Remote SDK и веб-игрой в WebView.
  *
- * ВАЖНО: SDK подключается ЧЕРЕЗ РЕФЛЕКСИЮ, а не через import.
+ * Два независимых канала ввода сводятся в один поток состояния пера:
  *
- * Причина: Samsung не публикует Pen Remote SDK в Maven — только AAR внутри
- * ZIP-архива с сайта разработчика. Прямой import сделал бы проект несобираемым
- * ни на CI, ни на чужой машине без ручного скачивания. С рефлексией APK
- * собирается везде и из коробки, а SDK — опциональное улучшение.
+ *  1. AIR MOTION (перо в воздухе) — SDK отдаёт ТОЛЬКО дельты угловой скорости
+ *     (deltaX/deltaY в градусах за тик). Абсолютного наклона в воздухе не
+ *     существует: гироскоп пера не знает, где «ноль». Поэтому дельты
+ *     интегрируются с утечкой к нулю — см. integrateAirMotion.
  *
- * Два независимых канала ввода объединяются в один поток состояния пера:
+ *  2. HOVER TILT (перо над экраном, <~1.5 см) — MotionEvent.AXIS_TILT даёт
+ *     честный АБСОЛЮТНЫЙ угол. Он же гасит накопленный дрейф первого канала.
  *
- *  1. AIR MOTION (перо в воздухе) — доступен только при наличии AAR.
- *     SDK отдаёт ТОЛЬКО дельты угловой скорости: абсолютного наклона
- *     в воздухе не существует, гироскоп пера не знает, где «ноль».
- *     Поэтому дельты интегрируются с утечкой к нулю (leaky integrator).
- *
- *  2. HOVER TILT (перо над экраном, <~1.5 см) — работает ВСЕГДА, без SDK.
- *     MotionEvent.AXIS_TILT даёт честный абсолютный угол, который заодно
- *     сбрасывает накопленный дрейф первого канала.
+ * Два подвоха этого SDK, стоящие отдельного упоминания:
+ *  - connect() принимает ТОЛЬКО Activity-контекст (сам SDK проверяет это
+ *    и иначе бросает исключение), поэтому конструктор требует Activity.
+ *  - SDK биндится к сервису пакета com.samsung.android.service.aircommand,
+ *    значит на Android 11+ нужен <queries> в манифесте, иначе система просто
+ *    скроет сервис и связь не установится.
  */
 class SPenBridge(
-    private val context: Context,
+    private val activity: Activity,
     private val webView: WebView
 ) {
     companion object {
         private const val TAG = "SPenBridge"
-        private const val PKG = "com.samsung.android.sdk.penremote"
 
         /** Сколько градусов наклона считаем «полным отклонением». */
         private const val FULL_TILT_DEG = 35f
@@ -65,152 +65,97 @@ class SPenBridge(
     @Volatile private var pressure = 0f
     @Volatile private var seq = 0L
     @Volatile private var airMotionAvailable = false
+    @Volatile private var connected = false
 
     private var buttonDownAt = 0L
     private var lastMotionNs = 0L
 
-    private val main = Handler(Looper.getMainLooper())
-
-    // ---- рефлексивные ссылки на SDK -----------------------------------------
-    private var spenRemote: Any? = null          // SpenRemote
-    private var unitManager: Any? = null         // SpenUnitManager
-    private var airMotionUnit: Any? = null
-    private var buttonUnit: Any? = null
-    private var sdkPresent = false
+    private var unitManager: SpenUnitManager? = null
+    private var airMotionUnit: SpenUnit? = null
+    private var buttonUnit: SpenUnit? = null
 
     /**
-     * Пытаемся поднять SDK. Любая осечка — не ошибка, а штатный сценарий:
-     * значит, играем на hover-наклоне.
+     * Поднимаем SDK. Неудача — не ошибка, а штатный сценарий: на устройстве
+     * без Air Actions игра работает на hover-наклоне.
      */
     fun connect(onReady: (Boolean) -> Unit) {
-        val remoteCls = try {
-            Class.forName("$PKG.SpenRemote")
-        } catch (_: ClassNotFoundException) {
-            Log.i(TAG, "Pen Remote SDK не найден в APK — работаем на hover-наклоне")
+        val remote = try {
+            SpenRemote.getInstance()
+        } catch (e: Throwable) {
+            Log.w(TAG, "S Pen Framework недоступен: ${e.message}")
             onReady(false)
             return
         }
 
-        try {
-            sdkPresent = true
-            val remote = remoteCls.getMethod("getInstance").invoke(null)
-            spenRemote = remote
+        airMotionAvailable = remote.isFeatureEnabled(SpenRemote.FEATURE_TYPE_AIR_MOTION)
+        if (!airMotionAvailable) {
+            Log.w(TAG, "Air Actions не поддерживаются этим устройством")
+        }
 
-            // Константы читаем полем, а не хардкодим числом: Samsung их менял.
-            val featureAirMotion = remoteCls.getField("FEATURE_TYPE_AIR_MOTION").getInt(null)
-            airMotionAvailable = remoteCls
-                .getMethod("isFeatureEnabled", Int::class.javaPrimitiveType)
-                .invoke(remote, featureAirMotion) as Boolean
-
-            if (!airMotionAvailable) {
-                Log.w(TAG, "Air Actions недоступны на этом устройстве")
+        remote.setConnectionStateChangeListener { state ->
+            connected = state == SpenRemote.State.CONNECTED
+            if (!connected) {
+                unitManager = null
+                Log.i(TAG, "S Pen отключился, состояние=$state")
             }
+        }
 
-            // ConnectionStateChangeListener — интерфейс, реализуем динамическим прокси.
-            val listenerCls = Class.forName("$PKG.SpenRemote\$ConnectionStateChangeListener")
-            val listener = Proxy.newProxyInstance(
-                listenerCls.classLoader,
-                arrayOf(listenerCls),
-                InvocationHandler { _, method: Method, args ->
-                    when (method.name) {
-                        "onConnected" -> {
-                            unitManager = args?.getOrNull(0)
-                            unitManager?.let {
-                                registerAirMotion(it)
-                                registerButton(it)
-                            }
-                            main.post { onReady(true) }
-                        }
-                        "onDisconnected" -> {
-                            unitManager = null
-                            main.post { onReady(false) }
-                        }
-                    }
-                    null
+        try {
+            remote.connect(activity, object : SpenRemote.ConnectionResultCallback {
+                override fun onSuccess(manager: SpenUnitManager) {
+                    unitManager = manager
+                    connected = true
+                    registerAirMotion(manager)
+                    registerButton(manager)
+                    webView.post { onReady(true) }
                 }
-            )
 
-            remoteCls
-                .getMethod("connect", Context::class.java, listenerCls)
-                .invoke(remote, context, listener)
+                override fun onFailure(error: Int) {
+                    val reason = when (error) {
+                        SpenRemote.Error.UNSUPPORTED_DEVICE -> "устройство не поддерживается"
+                        SpenRemote.Error.CONNECTION_FAILED -> "не удалось подключиться"
+                        else -> "неизвестная ошибка ($error)"
+                    }
+                    Log.w(TAG, "S Pen Remote недоступен: $reason")
+                    webView.post { onReady(false) }
+                }
+            })
         } catch (e: Throwable) {
-            Log.w(TAG, "Не удалось поднять Pen Remote SDK: ${e.message}")
-            sdkPresent = false
+            Log.w(TAG, "connect() упал: ${e.message}")
             onReady(false)
         }
     }
 
-    /** Общая часть регистрации: получить юнит нужного типа и повесить слушатель. */
-    private fun registerUnit(manager: Any, typeFieldName: String, onEvent: (Any) -> Unit): Any? {
-        return try {
-            val unitCls = Class.forName("$PKG.SpenUnit")
-            val type = unitCls.getField(typeFieldName).getInt(null)
-            val unit = manager.javaClass
-                .getMethod("getUnit", Int::class.javaPrimitiveType)
-                .invoke(manager, type) ?: return null
-
-            val eventListenerCls = Class.forName("$PKG.SpenEventListener")
-            val proxy = Proxy.newProxyInstance(
-                eventListenerCls.classLoader,
-                arrayOf(eventListenerCls),
-                InvocationHandler { _, method, args ->
-                    if (method.name == "onEvent") {
-                        args?.getOrNull(0)?.let(onEvent)
-                    }
-                    null
-                }
-            )
-            manager.javaClass
-                .getMethod("registerSpenEventListener", eventListenerCls, unitCls)
-                .invoke(manager, proxy, unit)
-            unit
-        } catch (e: Throwable) {
-            Log.w(TAG, "Юнит $typeFieldName недоступен: ${e.message}")
-            null
-        }
+    private fun registerAirMotion(manager: SpenUnitManager) {
+        val unit = manager.getUnit(SpenUnit.TYPE_AIR_MOTION) ?: return
+        airMotionUnit = unit
+        manager.registerSpenEventListener(SpenEventListener { event: SpenEvent ->
+            val air = AirMotionEvent(event)
+            val now = System.nanoTime()
+            val dt = if (lastMotionNs == 0L) 1f / 90f
+                     else ((now - lastMotionNs) / 1e9f).coerceIn(1f / 240f, 0.05f)
+            lastMotionNs = now
+            integrateAirMotion(air.deltaX, air.deltaY, dt)
+        }, unit)
     }
 
-    private fun registerAirMotion(manager: Any) {
-        val airEventCls = try { Class.forName("$PKG.AirMotionEvent") } catch (_: Throwable) { return }
-        val ctor = airEventCls.getConstructor(Class.forName("$PKG.SpenEvent"))
-        val getDX = airEventCls.getMethod("getDeltaX")
-        val getDY = airEventCls.getMethod("getDeltaY")
-
-        airMotionUnit = registerUnit(manager, "TYPE_AIR_MOTION") { event ->
-            try {
-                val e = ctor.newInstance(event)
-                val now = System.nanoTime()
-                val dt = if (lastMotionNs == 0L) 1f / 90f
-                         else ((now - lastMotionNs) / 1e9f).coerceIn(1f / 240f, 0.05f)
-                lastMotionNs = now
-                integrateAirMotion(getDX.invoke(e) as Float, getDY.invoke(e) as Float, dt)
-            } catch (_: Throwable) { /* битый пакет — пропускаем кадр */ }
-        }
-    }
-
-    private fun registerButton(manager: Any) {
-        val btnEventCls = try { Class.forName("$PKG.ButtonEvent") } catch (_: Throwable) { return }
-        val ctor = btnEventCls.getConstructor(Class.forName("$PKG.SpenEvent"))
-        val getAction = btnEventCls.getMethod("getAction")
-        val actionDown = btnEventCls.getField("ACTION_DOWN").getInt(null)
-        val actionUp = btnEventCls.getField("ACTION_UP").getInt(null)
-
-        buttonUnit = registerUnit(manager, "TYPE_BUTTON") { event ->
-            try {
-                when (getAction.invoke(ctor.newInstance(event)) as Int) {
-                    actionDown -> {
-                        buttonDown = true
-                        buttonDownAt = System.currentTimeMillis()
-                        emitDiscrete("button_down", 0L)
-                    }
-                    actionUp -> {
-                        buttonDown = false
-                        val held = System.currentTimeMillis() - buttonDownAt
-                        emitDiscrete(if (held >= LONG_PRESS_MS) "button_long" else "button_tap", held)
-                    }
+    private fun registerButton(manager: SpenUnitManager) {
+        val unit = manager.getUnit(SpenUnit.TYPE_BUTTON) ?: return
+        buttonUnit = unit
+        manager.registerSpenEventListener(SpenEventListener { event: SpenEvent ->
+            when (ButtonEvent(event).action) {
+                ButtonEvent.ACTION_DOWN -> {
+                    buttonDown = true
+                    buttonDownAt = System.currentTimeMillis()
+                    emitDiscrete("button_down", 0L)
                 }
-            } catch (_: Throwable) { /* битый пакет */ }
-        }
+                ButtonEvent.ACTION_UP -> {
+                    buttonDown = false
+                    val held = System.currentTimeMillis() - buttonDownAt
+                    emitDiscrete(if (held >= LONG_PRESS_MS) "button_long" else "button_tap", held)
+                }
+            }
+        }, unit)
     }
 
     /**
@@ -264,9 +209,12 @@ class SPenBridge(
 
     fun onHoverExit() { hovering = false }
 
-    /** Нажатие боковой кнопки пера, пойманное как MotionEvent (без SDK). */
+    /**
+     * Боковая кнопка, пойманная как MotionEvent. Нужна, пока SDK не подключён:
+     * на устройствах без Air Actions это единственный источник нажатий.
+     */
     fun onStylusButton(down: Boolean) {
-        if (sdkPresent) return  // при живом SDK источник истины — он
+        if (connected) return  // при живом SDK источник истины — он
         if (down && !buttonDown) {
             buttonDown = true
             buttonDownAt = System.currentTimeMillis()
@@ -301,32 +249,31 @@ class SPenBridge(
         put("hdist", hoverDistance)
         put("pressure", pressure)
         put("seq", seq)
-        put("airMotion", airMotionAvailable)
+        put("airMotion", airMotionAvailable && connected)
     }.toString()
 
     @JavascriptInterface
-    fun vibrate(ms: Int) = Haptics.buzz(context, ms)
+    fun vibrate(ms: Int) = Haptics.buzz(activity, ms)
 
     /** Дискретные события кнопки пушим в JS, чтобы не терять быстрые тапы между кадрами. */
     private fun emitDiscrete(kind: String, held: Long) {
         val js = "window.__spen && window.__spen.onEvent('$kind', $held);"
-        main.post { webView.evaluateJavascript(js, null) }
+        webView.post { webView.evaluateJavascript(js, null) }
     }
 
     fun disconnect() {
         try {
-            val manager = unitManager ?: return
-            val unitCls = Class.forName("$PKG.SpenUnit")
-            val unregister = manager.javaClass.getMethod("unregisterSpenEventListener", unitCls)
-            airMotionUnit?.let { unregister.invoke(manager, it) }
-            buttonUnit?.let { unregister.invoke(manager, it) }
-            spenRemote?.let {
-                it.javaClass.getMethod("disconnect", Context::class.java).invoke(it, context)
+            unitManager?.let { m ->
+                airMotionUnit?.let { m.unregisterSpenEventListener(it) }
+                buttonUnit?.let { m.unregisterSpenEventListener(it) }
             }
-        } catch (_: Throwable) { /* уже отключились */ }
-        spenRemote = null
+            SpenRemote.getInstance().disconnect(activity)
+        } catch (e: Throwable) {
+            Log.w(TAG, "disconnect(): ${e.message}")
+        }
         unitManager = null
         airMotionUnit = null
         buttonUnit = null
+        connected = false
     }
 }

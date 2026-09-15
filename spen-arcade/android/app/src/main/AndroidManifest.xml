@@ -8,6 +8,13 @@
     <uses-feature android:name="com.samsung.feature.spen_remote" android:required="false" />
     <uses-feature android:name="android.hardware.sensor.gyroscope" android:required="false" />
 
+    <!-- SDK биндится к сервису пакета S Pen Framework явным ComponentName.
+         На Android 11+ package visibility скрывает чужие пакеты, и без этого
+         блока bindService() молча не находит сервис. -->
+    <queries>
+        <package android:name="com.samsung.android.service.aircommand" />
+    </queries>
+
     <application
         android:label="S Pen Arcade"
         android:hardwareAccelerated="true"
