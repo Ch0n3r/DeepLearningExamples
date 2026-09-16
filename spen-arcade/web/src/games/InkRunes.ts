@@ -240,7 +240,8 @@ export class InkRunes implements Scene {
       this.cy = pen.hoverY * ctx.h;
     } else {
       this.cx += dx * ctx.w * gain;
-      this.cy += dy * ctx.h * gain;
+      // Вертикальная дельта пера растёт вверх, экранная ось Y — вниз.
+      this.cy -= dy * ctx.h * gain;
     }
     this.cx = clamp(this.cx, 12, ctx.w - 12);
     this.cy = clamp(this.cy, 12, ctx.h - 12);

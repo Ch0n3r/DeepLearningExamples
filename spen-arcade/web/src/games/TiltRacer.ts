@@ -1,8 +1,22 @@
-import { Scene, SceneContext } from '../core/Engine';
+import { Scene, SceneContext, persist } from '../core/Engine';
 import { Shell } from '../core/Shell';
 import { clamp, damp, fbm, lerp, makeNoise1D, makeRng, TAU } from '../core/math';
 
 interface TrackPoint { x: number; y: number; nx: number; ny: number; width: number; }
+
+/**
+ * Пресет трассы. Форма задаётся не только seed'ом: радиус, сжатие и размах
+ * шума меняют характер круга сильнее, чем другое зерно того же шума.
+ */
+interface TrackPreset {
+  name: string;
+  seed: number;
+  radius: number;
+  aspect: number;   // сжатие по вертикали
+  wobble: number;   // насколько шум гнёт радиус
+  width: number;    // базовая ширина полотна
+  cones: number;    // плотность конусов
+}
 interface Cone { x: number; y: number; hit: boolean; }
 interface Gate { x: number; y: number; nx: number; ny: number; w: number; passed: boolean; }
 
@@ -44,18 +58,48 @@ export class TiltRacer implements Scene {
   private timeLeft = 45;
   /** Следы шин. Кольцевой буфер: держим последние N отрезков и затираем
    *  старые, иначе за минуту дрифта массив разрастётся до десятков тысяч. */
+  /**
+   * Положение «рычагов»: руль и педаль держатся там, куда их поставили.
+   *
+   * Наклон здесь НЕ самоцентрируется. Канал tiltX/tiltY утекает к нулю —
+   * это правильно для самолёта, но рулю противопоказано: держишь перо
+   * повёрнутым, а колёса сами возвращаются прямо. Поэтому оба рычага
+   * набираются из покадровых дельт и остаются в заданном положении.
+   */
+  private steer = 0;
+  private pedal = 0;
+
   private skid: { x: number; y: number; a: number; w: number }[] = [];
   private static readonly MAX_SKID = 260;
   private shell = new Shell('race', () => this.restart());
   private ctxRef: SceneContext | null = null;
 
-  private static readonly ENGINE = 1750;
-  private static readonly BRAKE = 2300;
-  private static readonly STEER = 3.1;
+  private static readonly ENGINE = 900;
+  private static readonly REVERSE = 420;
+  private static readonly BRAKE = 1700;
+  private static readonly STEER = 2.0;
+  /** Потолок хода. Без него дрифт на длинной прямой разгонял до неуправляемого. */
+  private static readonly MAX_SPEED = 400;
+  private static readonly MAX_REVERSE = 150;
+  /** Во сколько единиц руля превращается единичная дельта пера. */
+  private static readonly STEER_GAIN = 2.6;
+  private static readonly PEDAL_GAIN = 2.6;
+  /** Ниже этого хода тормоз превращается в задний ход. */
+  private static readonly REVERSE_THRESHOLD = 24;
   private static readonly GRIP_FWD = 0.02;   // сопротивление вдоль корпуса (мало)
   private static readonly GRIP_SIDE = 7.5;   // поперёк (много = держит дорогу)
   private static readonly GRIP_SIDE_DRIFT = 1.4;
   private static readonly SEGMENTS = 900;
+
+  private static readonly TRACKS: TrackPreset[] = [
+    { name: 'КОЛЬЦО',   seed: 101, radius: 1400, aspect: 0.78, wobble: 520, width: 150, cones: 0.35 },
+    { name: 'СЕРПАНТИН', seed: 202, radius: 1250, aspect: 0.92, wobble: 820, width: 125, cones: 0.5 },
+    { name: 'ОВАЛ',     seed: 303, radius: 1600, aspect: 0.55, wobble: 240, width: 175, cones: 0.25 },
+    { name: 'УЗЛЫ',     seed: 404, radius: 1320, aspect: 0.85, wobble: 980, width: 115, cones: 0.6 },
+    { name: 'ДЛИННАЯ',  seed: 505, radius: 1750, aspect: 0.7,  wobble: 430, width: 160, cones: 0.4 },
+  ];
+
+  private preset: TrackPreset = TiltRacer.TRACKS[0];
 
   enter(ctx: SceneContext) {
     this.ctxRef = ctx;
@@ -64,9 +108,15 @@ export class TiltRacer implements Scene {
 
   private restart() {
     const ctx = this.ctxRef!;
-    const seed = (Date.now() & 0x7fff) | 1;
-    this.noise = makeNoise1D(seed);
-    this.rng = makeRng(seed);
+    // Трассы идут по кругу: каждый заезд — следующая, выбор запоминается.
+    const idx = ((ctx.save.trackIndex ?? 0) % TiltRacer.TRACKS.length + TiltRacer.TRACKS.length)
+                % TiltRacer.TRACKS.length;
+    this.preset = TiltRacer.TRACKS[idx];
+    ctx.save.trackIndex = (idx + 1) % TiltRacer.TRACKS.length;
+    persist(ctx.save);
+
+    this.noise = makeNoise1D(this.preset.seed);
+    this.rng = makeRng(this.preset.seed);
     this.buildTrack();
 
     const p = this.track[0];
@@ -76,6 +126,7 @@ export class TiltRacer implements Scene {
     this.heading = Math.atan2(this.track[1].y - p.y, this.track[1].x - p.x);
     this.angVel = 0; this.drift = 0; this.nearest = 0;
     this.skid = [];
+    this.steer = 0; this.pedal = 0;
     this.time = 0; this.score = 0; this.combo = 0; this.finished = false;
     this.timeLeft = 45;
     this.best = ctx.save.best[this.name] ?? 0;
@@ -101,9 +152,13 @@ export class TiltRacer implements Scene {
       // периодический шум: два независимых fbm по cos и sin
       const wob = fbm(this.noise, Math.cos(a) * 3 + 10, 4) * 0.55
                 + fbm(this.noise, Math.sin(a) * 3 + 40, 3) * 0.45;
-      const radius = 1400 + wob * 620;
-      const width = 130 + fbm(this.noise, Math.cos(a) * 5 + 90, 2) * 55;
-      pts.push({ x: Math.cos(a) * radius, y: Math.sin(a) * radius * 0.78, width });
+      const radius = this.preset.radius + wob * this.preset.wobble;
+      const width = this.preset.width + fbm(this.noise, Math.cos(a) * 5 + 90, 2) * 45;
+      pts.push({
+        x: Math.cos(a) * radius,
+        y: Math.sin(a) * radius * this.preset.aspect,
+        width,
+      });
     }
 
     for (let i = 0; i < n; i++) {
@@ -121,7 +176,7 @@ export class TiltRacer implements Scene {
       // и конус рядом означал бы штраф ещё до первого поворота.
       if (i < 40) continue;
       const t = this.track[i];
-      if (this.rng() < 0.45) {
+      if (this.rng() < this.preset.cones) {
         const off = (this.rng() * 2 - 1) * (t.width * 0.72);
         this.cones.push({ x: t.x + t.nx * off, y: t.y + t.ny * off, hit: false });
       }
@@ -167,18 +222,22 @@ export class TiltRacer implements Scene {
     this.timeLeft -= dt;
     if (this.timeLeft <= 0) { this.finish(ctx); return; }
 
-    const tiltY = pen.tiltY;
-    // Наклон «от себя» = газ. Это интуитивнее, чем наоборот: игрок буквально
-    // толкает машину вперёд кончиком пера.
-    const throttle = clamp(-tiltY, 0, 1);
-    const brake = clamp(tiltY, 0, 1);
+    // --- рычаги ---------------------------------------------------------------
+    const { dx, dy } = ctx.input.consumeDelta();
+    const sens = ctx.input.sensitivity;
+    this.steer = clamp(this.steer + dx * TiltRacer.STEER_GAIN * sens, -1, 1);
+    // Вертикальная дельта пера растёт вверх, а газ должен быть «вниз».
+    this.pedal = clamp(this.pedal - dy * TiltRacer.PEDAL_GAIN * sens, -1, 1);
+
+    const throttle = clamp(this.pedal, 0, 1);
+    const brake = clamp(-this.pedal, 0, 1);
     const handbrake = pen.button;
 
     // --- ориентация ---------------------------------------------------------
     const fwdSpeed = this.vx * Math.cos(this.heading) + this.vy * Math.sin(this.heading);
     // Руль работает только на ходу: стоящая машина не вращается на месте.
     const steerAuth = clamp(Math.abs(fwdSpeed) / 220, 0, 1);
-    const steerTarget = pen.tiltX * TiltRacer.STEER * steerAuth * Math.sign(fwdSpeed || 1);
+    const steerTarget = this.steer * TiltRacer.STEER * steerAuth * Math.sign(fwdSpeed || 1);
     this.angVel = damp(this.angVel, steerTarget, handbrake ? 0.05 : 0.10, dt);
     this.heading += this.angVel * dt;
 
@@ -186,13 +245,28 @@ export class TiltRacer implements Scene {
     const cs = Math.cos(this.heading), sn = Math.sin(this.heading);
     this.vx += cs * throttle * TiltRacer.ENGINE * dt;
     this.vy += sn * throttle * TiltRacer.ENGINE * dt;
+
     if (brake > 0.02) {
-      const sp = Math.hypot(this.vx, this.vy);
-      if (sp > 1) {
-        const dec = Math.min(sp, brake * TiltRacer.BRAKE * dt);
-        this.vx -= (this.vx / sp) * dec;
-        this.vy -= (this.vy / sp) * dec;
+      if (fwdSpeed > TiltRacer.REVERSE_THRESHOLD) {
+        // Пока катимся вперёд — это тормоз.
+        const sp = Math.hypot(this.vx, this.vy);
+        if (sp > 1) {
+          const dec = Math.min(sp, brake * TiltRacer.BRAKE * dt);
+          this.vx -= (this.vx / sp) * dec;
+          this.vy -= (this.vy / sp) * dec;
+        }
+      } else {
+        // Почти встали — тот же наклон включает заднюю передачу.
+        this.vx -= cs * brake * TiltRacer.REVERSE * dt;
+        this.vy -= sn * brake * TiltRacer.REVERSE * dt;
       }
+    }
+
+    // Потолок скорости, отдельный для переднего и заднего хода.
+    {
+      const sp = Math.hypot(this.vx, this.vy);
+      const cap = fwdSpeed < -1 ? TiltRacer.MAX_REVERSE : TiltRacer.MAX_SPEED;
+      if (sp > cap) { this.vx = this.vx / sp * cap; this.vy = this.vy / sp * cap; }
     }
 
     // --- разложение скорости на продольную и поперечную -----------------------
@@ -364,12 +438,18 @@ export class TiltRacer implements Scene {
     g.save();
     g.translate(ix, iy);
     g.rotate(this.heading);
-    // колёса
+    // колёса: передние доворачиваются вслед за рулём
     g.fillStyle = '#15161c';
     g.fillRect(-14, -14, 9, 5);
     g.fillRect(-14, 9, 9, 5);
-    g.fillRect(7, -14, 9, 5);
-    g.fillRect(7, 9, 9, 5);
+    const wa = this.steer * 0.5;
+    for (const wy of [-11.5, 11.5]) {
+      g.save();
+      g.translate(11.5, wy);
+      g.rotate(wa);
+      g.fillRect(-4.5, -2.5, 9, 5);
+      g.restore();
+    }
     // кузов
     g.fillStyle = this.drift > 0.4 ? '#ffd166' : '#e9f2ff';
     r.roundRect(-18, -11, 36, 22, 5, this.drift > 0.4 ? '#ffd166' : '#e9f2ff');
@@ -386,11 +466,28 @@ export class TiltRacer implements Scene {
     r.ui();
     r.text(`${Math.floor(this.score)}`, 20, 34, 30, '#ffffff');
     r.text(`рекорд ${this.best}`, 20, 62, 13, '#7f93b8');
-    const sp = Math.hypot(this.vx, this.vy) * 0.19;
+    const sp = Math.hypot(this.vx, this.vy) * 0.45;
     r.text(`${Math.round(sp)} км/ч`, ctx.w - 82, 30, 22, '#8fd6ff', 'right');
     r.text(`${this.timeLeft.toFixed(1)} с`, ctx.w - 82, 58, 18,
       this.timeLeft < 8 ? '#ff6b6b' : '#cfe0ff', 'right');
     if (this.combo > 1) r.text(`ворота x${this.combo}`, ctx.w / 2, 34, 18, '#7dffb0', 'center');
+    r.text(this.preset.name, 20, 84, 13, '#8fa5d8');
+
+    // Передача: задний ход надо видеть, иначе непонятно, почему едешь назад.
+    const fwd = this.vx * Math.cos(this.heading) + this.vy * Math.sin(this.heading);
+    if (fwd < -4) r.text('ЗАДНИЙ ХОД', ctx.w / 2, ctx.h - 66, 16, '#ff9f6b', 'center');
+
+    // Положение рычагов: они не самоцентрируются, поэтому игрок должен
+    // видеть, где они стоят, — иначе легко потерять ноль.
+    const gx = 20, gy = ctx.h - 44, gw = 120;
+    r.roundRect(gx, gy, gw, 6, 3, 'rgba(255,255,255,0.16)');
+    r.roundRect(gx + gw / 2 - 2 + this.steer * (gw / 2 - 2), gy - 2, 4, 10, 2, '#5ad2ff');
+    r.text('руль', gx + gw + 10, gy + 3, 11, '#7f93b8');
+
+    r.roundRect(gx, gy + 16, gw, 6, 3, 'rgba(255,255,255,0.16)');
+    r.roundRect(gx + gw / 2 - 2 + this.pedal * (gw / 2 - 2), gy + 14, 4, 10, 2,
+      this.pedal >= 0 ? '#7dffb0' : '#ff8a5c');
+    r.text(this.pedal >= 0 ? 'газ' : 'тормоз', gx + gw + 10, gy + 19, 11, '#7f93b8');
     if (this.drift > 0.4) r.text('ДРИФТ', ctx.w / 2, ctx.h - 40, 24, '#ffd166', 'center');
     r.restore();
     this.shell.render(ctx);

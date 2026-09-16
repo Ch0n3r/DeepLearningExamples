@@ -36,6 +36,8 @@ export interface SaveData {
   invertY: boolean;
   invertX: boolean;
   swapAxes: boolean;
+  /** Какую трассу выдать в следующем заезде. */
+  trackIndex: number;
   unlocked: string[];
 }
 
@@ -44,7 +46,7 @@ const SAVE_KEY = 'spen-arcade-v1';
 function loadSave(): SaveData {
   const fallback: SaveData = {
     best: {}, coins: 0, sensitivity: 1, deadzone: 0.07,
-    invertY: false, invertX: false, swapAxes: false, unlocked: ['sky'],
+    invertY: false, invertX: false, swapAxes: false, trackIndex: 0, unlocked: ['sky'],
   };
   try {
     const raw = localStorage.getItem(SAVE_KEY);

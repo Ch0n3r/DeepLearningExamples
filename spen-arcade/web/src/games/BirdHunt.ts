@@ -161,7 +161,8 @@ export class BirdHunt implements Scene {
     } else {
       const gain = BirdHunt.AIM_GAIN * ctx.input.sensitivity;
       this.aimX += dx * ctx.w * gain;
-      this.aimY += dy * ctx.h * gain;
+      // Вертикальная дельта пера растёт вверх, экранная ось Y — вниз.
+      this.aimY -= dy * ctx.h * gain;
     }
 
     // Отдача — короткий толчок вверх, который сам затухает.
