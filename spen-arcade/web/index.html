@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <title>S Pen Arcade</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #06070f;
+      font-family: "Inter", system-ui, -apple-system, sans-serif; color: #e8f0ff;
+      -webkit-user-select: none; user-select: none; touch-action: none; overscroll-behavior: none; }
+    #game { display: block; width: 100vw; height: 100vh; }
+    #gate { position: fixed; inset: 0; display: grid; place-content: center; gap: 18px;
+      text-align: center; padding: 24px; background: radial-gradient(circle at 50% 35%, #131c3d, #06070f 70%); }
+    h1 { margin: 0; font-size: clamp(28px, 8vw, 46px); letter-spacing: .06em; }
+    p  { margin: 0; max-width: 34ch; line-height: 1.55; color: #9fb2da; font-size: 14px; }
+    button { margin-top: 8px; padding: 14px 34px; border: 0; border-radius: 999px;
+      background: #5ad2ff; color: #04121c; font: 600 17px/1 inherit; }
+    ul { text-align: left; margin: 0; padding-left: 20px; color: #8fa5d8; font-size: 13px; line-height: 1.8; }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="gate">
+    <h1>S PEN ARCADE</h1>
+    <p>Держи телефон двумя руками, а стилус — в воздухе. Управление идёт от наклона пера.</p>
+    <ul>
+      <li>Наклон пера — направление</li>
+      <li>Кнопка стилуса — действие (форсаж / выстрел / ручник)</li>
+      <li>Удержание кнопки — перезарядка или рисование руны</li>
+      <li>Без S Pen: мышь + пробел, либо наклон телефона</li>
+    </ul>
+    <button id="start">Начать</button>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
